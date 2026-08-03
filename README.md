@@ -32,10 +32,10 @@ in the browser.
 
 ## Alternative: self-host on Coolify
 
-The same Dockerfile works unchanged on Coolify. Two options, both on port **3000**:
+The same Dockerfile works unchanged on Coolify. Two options, both on port **8080**:
 
 **App container + MongoDB Atlas** — Coolify only runs the app: New Resource →
-Application → your repo → build pack **Dockerfile** → port `3000` → set `MONGODB_URI` to
+Application → your repo → build pack **Dockerfile** → port `8080` → set `MONGODB_URI` to
 your Atlas string, `MONGODB_DB=sevaboard`, `BOARD_PASSWORD` (optional) → attach domain.
 
 **Fully self-contained** — app + MongoDB in one stack, no Atlas needed: New Resource →
