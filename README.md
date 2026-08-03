@@ -52,14 +52,16 @@ service.
 | `MONGODB_URI`    | yes      | Railway Mongo reference variable, Atlas string, or `mongodb://mongo:27017` with the bundled compose. |
 | `MONGODB_DB`     | no       | Defaults to `sevaboard`.                                              |
 | `BOARD_PASSWORD` | no       | If set, the app shows a passcode screen and every API call requires it. Leave empty only if the app sits behind Coolify/Cloudflare Access. |
-| `MS_TENANT_ID`   | no*      | Azure AD tenant ID. Enables sending email via Microsoft 365 / Outlook. |
-| `MS_CLIENT_ID`   | no*      | Azure AD app (client) ID. |
-| `MS_CLIENT_SECRET` | no*    | Azure AD app client secret. |
-| `MS_SENDER_EMAIL`  | no*    | The mailbox the app sends as, e.g. `mukunda@hkmvizag.org`. Must be a real licensed mailbox in your tenant. |
-| `RESEND_API_KEY` | no       | Fallback provider, only used if the Microsoft vars above aren't set. |
-| `EMAIL_FROM`     | no       | Sender shown on Resend emails only. Ignored when Microsoft Graph is configured (Graph always sends as `MS_SENDER_EMAIL`). |
+| `APP_BASE_URL`   | no**     | Public URL of the deployed app, e.g. `https://seva-board.up.railway.app`. Needed for the Outlook "Connect" sign-in flow's redirect URI. |
+| `MS_TENANT_ID`   | no*      | Azure AD tenant ID. Shared by both Microsoft email options below. |
+| `MS_CLIENT_ID`   | no*      | Azure AD app (client) ID. Shared by both Microsoft email options below. |
+| `MS_CLIENT_SECRET` | no*    | Azure AD app client secret. Shared by both Microsoft email options below. |
+| `MS_SENDER_EMAIL`  | no     | Only used by the app-only fallback (no sign-in). Ignored if an account is connected via "Connect Outlook". |
+| `RESEND_API_KEY` | no       | Last-resort fallback, only used if neither Microsoft option is set up. |
+| `EMAIL_FROM`     | no       | Sender shown on Resend emails only. |
 
-\* Not individually required, but all four Microsoft vars must be set together to enable Graph sending.
+\* Required together to enable *either* Microsoft email option.
+\*\* Required only for the "Connect Outlook" sign-in flow.
 
 Copy `.env.example` to `.env` for local runs.
 
@@ -98,65 +100,90 @@ assignment/unassignment, priority and due-date edits, seva changes, and email se
 each with a timestamp and who did it. It's visible under **Activity & tracking** inside
 the task modal, newest first. Nothing here is editable; it's an audit log, not a field.
 
-## Email notifications (Microsoft 365)
+## Email notifications (Microsoft 365 / Outlook)
 
 Add an email address to a devotee under **Manage → Team**. When they're assigned to a
 task (on creation or by adding them later), the app automatically emails them — with the
-seva, due date, priority, and notes — sent through **`mukunda@hkmvizag.org`** via
-Microsoft Graph (that mailbox's existing Microsoft 365/Outlook licence is exactly what's
-needed here — no new mailbox required). You can also resend manually from the
-**Email seva assignment** button inside any task. Every send is logged in that task's
-activity trail.
+seva, due date, priority, and notes. Every send is logged in that task's activity trail,
+and you can resend manually any time from the **Email seva assignment** button inside a
+task.
 
-**One-time Azure AD setup** (do this once in the Microsoft 365 admin center's Azure
-Portal — since `mukunda@hkmvizag.org` is on your Business/Enterprise tenant, this is a
-standard app-registration flow; do it as, or with, whoever holds Global Admin):
+There are two ways to wire up the actual sending, both using the same Azure AD app
+registration. **Use option 1** unless you specifically want a fixed, no-login sender.
 
-1. Go to **Azure Portal → Microsoft Entra ID → App registrations → New registration**.
-   Name it e.g. "Seva Board", leave redirect URI blank, register.
-2. Copy the **Application (client) ID** and **Directory (tenant) ID** from the app's
-   Overview page → these become `MS_CLIENT_ID` and `MS_TENANT_ID`.
-3. **Certificates & secrets → New client secret** → copy the secret's *value*
-   immediately (it's hidden after you leave the page) → this becomes `MS_CLIENT_SECRET`.
-4. **API permissions → Add a permission → Microsoft Graph → Application permissions**
-   → search `Mail.Send` → add it.
-5. Still on API permissions, click **Grant admin consent for [your org]** (needs a
-   Global Admin or Exchange Admin). Without this step, sends will fail with a
-   permissions error.
-6. Set `MS_SENDER_EMAIL=mukunda@hkmvizag.org`. It's already a real, licensed mailbox
-   in your tenant, so no further mailbox setup is needed — the app sends *as* it.
+### Option 1 — Connect Outlook (recommended, sign-in based)
 
-**Recommended: restrict the app to only this one mailbox.** Step 5's `Mail.Send`
-permission is otherwise tenant-wide — technically the app could send as *any* mailbox in
-your org, not just this one. Since `mukunda@hkmvizag.org` is a personal account rather
-than a shared/service mailbox, it's worth locking that down. In
+You (or anyone using this board) click **Manage → Email account → Connect Outlook**,
+sign into Microsoft normally, and approve the app sending mail as you. No admin consent
+step is required if your tenant allows individual users to consent to this scope — if
+it doesn't, a Global Admin approves it once for the app, same as option 2 below.
+This is the better fit for a personal tool: it's you signing in as yourself, not a
+shared service identity, and it's what makes the tool usable by someone else too — they
+connect their own Outlook account the same way.
+
+**One-time Azure AD setup:**
+
+1. **Azure Portal → Microsoft Entra ID → App registrations → New registration.**
+   Name it "Seva Board", leave redirect URI blank for now, register.
+2. Copy the **Application (client) ID** and **Directory (tenant) ID** → `MS_CLIENT_ID`
+   and `MS_TENANT_ID`.
+3. **Certificates & secrets → New client secret** → copy the *value* immediately →
+   `MS_CLIENT_SECRET`.
+4. **Authentication → Add a platform → Web.** Redirect URI:
+   `{APP_BASE_URL}/api/auth/microsoft/callback` — e.g.
+   `https://seva-board.up.railway.app/api/auth/microsoft/callback`. This must match
+   `APP_BASE_URL` exactly (protocol + host, no trailing slash).
+5. **API permissions → Add a permission → Microsoft Graph → Delegated permissions** →
+   add `Mail.Send`, `offline_access`, and `User.Read` (the last is usually already
+   there by default).
+6. If your tenant requires admin consent for delegated permissions too, click
+   **Grant admin consent for [your org]** here as well.
+7. Set `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, and `APP_BASE_URL` in
+   Railway, redeploy, then click **Connect Outlook** inside the app.
+
+The connected account (email, display name, and refresh token) is stored in MongoDB —
+tokens are refreshed automatically and never shown in the UI. **Manage → Email account**
+shows who's connected and has a **Disconnect** button.
+
+### Option 2 — App-only, fixed sender (advanced, no sign-in)
+
+Sends as one fixed mailbox with no login step, but needs a Global Admin to grant
+tenant-wide consent up front, and technically that consent lets the app send as *any*
+mailbox in your tenant unless you restrict it (see below). Better suited to a shared
+service mailbox than a personal inbox.
+
+Same app registration as above, plus:
+
+1. **API permissions → Add a permission → Microsoft Graph → Application permissions**
+   → add `Mail.Send`.
+2. **Grant admin consent for [your org]** (needs Global Admin or Exchange Admin).
+3. Set `MS_SENDER_EMAIL` to the mailbox to send as, e.g. `mukunda@hkmvizag.org` — must
+   be a real, licensed mailbox in your tenant.
+
+**Recommended: restrict the app to only that one mailbox** (since `Mail.Send`
+application permission is otherwise tenant-wide). In
 [Exchange Online PowerShell](https://learn.microsoft.com/en-us/powershell/exchange/connect-to-exchange-online-powershell)
-(connect as a Global/Exchange Admin):
+(as a Global/Exchange Admin):
 
 ```powershell
 New-ApplicationAccessPolicy -AppId <MS_CLIENT_ID> `
   -PolicyScopeGroupId mukunda@hkmvizag.org -AccessRight RestrictAccess `
-  -Description "Seva Board — restrict to Mukunda's mailbox only"
+  -Description "Seva Board — restrict to this mailbox only"
 
-# Verify it worked:
 Test-ApplicationAccessPolicy -AppId <MS_CLIENT_ID> -Identity mukunda@hkmvizag.org
 ```
 
-This makes the app registration only able to send as `mukunda@hkmvizag.org`, and Graph
-will reject any attempt to send as another mailbox.
+### Provider order
 
-Set all four vars (`MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_SENDER_EMAIL`)
-in Coolify's environment settings and redeploy. No code changes needed.
-
-If the Microsoft vars aren't set, the app falls back to Resend (if `RESEND_API_KEY` is
-set), and if neither is configured the email buttons show a clear "not configured"
-message instead of failing silently.
+If an Outlook account is connected via option 1, it's always used first. Otherwise, if
+`MS_SENDER_EMAIL` (option 2) is set, that's used. Otherwise, if `RESEND_API_KEY` is set,
+that's the fallback. If none of these are configured, the email buttons show a clear
+"not configured" message instead of failing silently.
 
 ## Notes
 
-
 - WhatsApp notify opens `wa.me` with a pre-filled message; the sender still taps send.
-  Email notify sends automatically through Microsoft 365 (or Resend as fallback), no extra tap needed on assignment.
+  Email notify sends automatically, no extra tap needed on assignment.
 - Recurring tasks spawn their next occurrence automatically when marked Completed.
 - To trigger automated WhatsApp reminders (via Flaxxa) on recurring/overdue tasks,
   add a small cron route that reads the board and calls the Flaxxa template API — happy to

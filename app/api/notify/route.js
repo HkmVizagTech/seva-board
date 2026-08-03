@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { getMsAuthDoc } from "../../../lib/mongodb";
+import { sendDelegatedMail } from "../../../lib/msDelegatedAuth";
 import { graphConfigured, sendGraphMail } from "../../../lib/msGraph";
 import { resendConfigured, sendResendMail } from "../../../lib/resendMail";
 
@@ -45,12 +47,14 @@ export async function POST(req) {
 
   const subject = `Seva assigned: ${title}`;
 
-  // Prefer Microsoft 365 (Graph) if configured; fall back to Resend; else tell the caller clearly.
-  const provider = graphConfigured() ? "microsoft" : resendConfigured() ? "resend" : null;
+  // Prefer a connected Outlook account (sign-in flow) → app-only Graph → Resend → not configured.
+  const delegatedDoc = await getMsAuthDoc().catch(() => null);
+  const provider = delegatedDoc ? "microsoft-delegated" : graphConfigured() ? "microsoft-apponly" : resendConfigured() ? "resend" : null;
   if (!provider) return NextResponse.json({ error: "email_not_configured" }, { status: 501 });
 
   try {
-    if (provider === "microsoft") await sendGraphMail({ to, subject, html });
+    if (provider === "microsoft-delegated") await sendDelegatedMail({ to, subject, html });
+    else if (provider === "microsoft-apponly") await sendGraphMail({ to, subject, html });
     else await sendResendMail({ to, subject, html });
     return NextResponse.json({ ok: true, provider });
   } catch (e) {

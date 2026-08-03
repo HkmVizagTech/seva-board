@@ -125,6 +125,12 @@ async function saveShared(d) { try { await apiBoard("PUT", d); } catch (e) { con
 function loadLocalPrefs() { try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || "null"); } catch (e) { return null; } }
 function saveLocalPrefs(d) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(d)); } catch (e) {} }
 
+async function msAuthCall(method) {
+  const headers = {};
+  const p = getPass(); if (p) headers["x-board-pass"] = p;
+  return fetch("/api/auth/microsoft/status", { method, headers });
+}
+
 /* ============================================================= */
 export default function SevaBoardPro() {
   const [sevas, setSevas] = useState(DEFAULT_SEVAS);
@@ -148,6 +154,7 @@ export default function SevaBoardPro() {
 
   const [taskModal, setTaskModal] = useState(null);
   const [manage, setManage] = useState(null);
+  const [msStatus, setMsStatus] = useState({ connected: false, email: "" });
   const [toasts, setToasts] = useState([]);
   const toast = (msg) => { const id = uid(); setToasts((p) => [...p, { id, msg }]); setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 2600); };
   const [gate, setGate] = useState(false);
@@ -178,6 +185,23 @@ export default function SevaBoardPro() {
     if (prefs) { setMeId(prefs.meId || ""); setTheme(prefs.theme || "light"); }
     localLoaded.current = true;
     loadAll();
+    refreshMsStatus();
+
+    // Handle the redirect back from Microsoft's consent screen (?ms_connect=ok|error).
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("ms_connect");
+    if (result === "ok") {
+      const email = params.get("email");
+      toast(email ? `Connected to Outlook as ${email}` : "Connected to Outlook");
+      refreshMsStatus();
+    } else if (result === "error") {
+      toast("Couldn't connect Outlook — try again");
+    }
+    if (result) {
+      params.delete("ms_connect"); params.delete("email"); params.delete("reason");
+      const q = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (q ? `?${q}` : ""));
+    }
   }, []);
   useEffect(() => {
     if (!loaded.current) return;
@@ -187,6 +211,16 @@ export default function SevaBoardPro() {
   useEffect(() => { if (localLoaded.current) saveLocalPrefs({ meId, theme }); }, [meId, theme]);
 
   const refresh = () => { toast("Syncing…"); loadAll(); };
+  const refreshMsStatus = async () => {
+    try { const res = await msAuthCall("GET"); if (res.ok) setMsStatus(await res.json()); } catch (e) {}
+  };
+  const disconnectMs = async () => {
+    try {
+      const res = await msAuthCall("DELETE");
+      if (res.ok) { setMsStatus({ connected: false }); toast("Disconnected Outlook account"); }
+      else toast("Couldn't disconnect");
+    } catch (e) { toast("Couldn't disconnect"); }
+  };
 
   const sevaById = useMemo(() => Object.fromEntries(sevas.map((s) => [s.id, s])), [sevas]);
   const memberById = useMemo(() => Object.fromEntries(members.map((m) => [m.id, m])), [members]);
@@ -330,6 +364,7 @@ export default function SevaBoardPro() {
               <button onClick={() => setManage("team")}><Users size={14} /> Team</button>
               <button onClick={() => setManage("sevas")}><Flame size={14} /> Sevas</button>
               <button onClick={() => setManage("festivals")}><PartyPopper size={14} /> Festivals</button>
+              <button onClick={() => setManage("email")}><Mail size={14} /> Email account</button>
             </Dropdown>
             <button className="sb-btn primary" onClick={() => setTaskModal({})}><Plus size={16} /> New task</button>
           </div>
@@ -369,6 +404,7 @@ export default function SevaBoardPro() {
       {manage === "team" && <TeamModal members={members} sevas={sevas} setMembers={setMembers} onClose={() => setManage(null)} />}
       {manage === "sevas" && <SevaAdminModal sevas={sevas} setSevas={setSevas} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "festivals" && <FestivalModal festivals={festivals} setFestivals={setFestivals} tasks={tasks} onClose={() => setManage(null)} />}
+      {manage === "email" && <EmailAccountModal status={msStatus} onDisconnect={disconnectMs} onRefresh={refreshMsStatus} onClose={() => setManage(null)} />}
 
       <div className="sb-toasts">{toasts.map((t) => <div key={t.id} className="sb-toast"><Check size={14} /> {t.msg}</div>)}</div>
       <footer className="sb-foot">Shared across everyone who opens this board · press <kbd>N</kbd> for a new task · भक्त्या सेवते</footer>
@@ -765,6 +801,34 @@ function FestivalModal({ festivals, setFestivals, tasks, onClose }) {
   );
 }
 
+/* ================= email account (Outlook connect) ================= */
+function EmailAccountModal({ status, onDisconnect, onRefresh, onClose }) {
+  useEffect(() => { onRefresh(); }, []); // pick up latest status each time it's opened
+  return (
+    <Modal onClose={onClose} title="Email account">
+      {status.connected ? (
+        <div className="sb-msaccount connected">
+          <div className="sb-msaccount-row">
+            <span className="sb-av" style={{ background: colorFor(status.email || "x") }}>{initials(status.name || status.email || "?")}</span>
+            <div>
+              <strong>{status.name || status.email}</strong>
+              {status.name && <em>{status.email}</em>}
+            </div>
+          </div>
+          <p className="sb-hint">Assignment emails are sent through this Outlook account. Disconnecting stops automatic sending until a new account is connected (or the app falls back to another configured provider).</p>
+          <button className="sb-btn danger" onClick={onDisconnect}><X size={14} /> Disconnect</button>
+        </div>
+      ) : (
+        <div className="sb-msaccount">
+          <p className="sb-hint">No Outlook account connected yet. Connect one so seva assignment emails are sent through it automatically.</p>
+          <a className="sb-btn primary" href="/api/auth/microsoft" style={{ textDecoration: "none" }}><Mail size={15} /> Connect Outlook</a>
+          <p className="sb-hint" style={{ marginTop: 10 }}>This opens Microsoft's own sign-in page — the board never sees your password.</p>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 /* ================= generic modal ================= */
 function Modal({ children, title, onClose, wide }) {
   useEffect(() => { const h = (e) => e.key === "Escape" && onClose(); window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [onClose]);
@@ -979,6 +1043,11 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-sub-row input{flex:1;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13.5px;background:var(--parchment);color:var(--ink);outline:none;}
 .sb-sub-row input.done{text-decoration:line-through;color:var(--muted);}
 .sb-hint{font-size:12.5px;color:var(--muted);font-style:italic;margin:0;}
+.sb-msaccount{display:flex;flex-direction:column;gap:12px;}
+.sb-msaccount-row{display:flex;align-items:center;gap:11px;}
+.sb-msaccount-row>div{display:flex;flex-direction:column;line-height:1.3;}
+.sb-msaccount-row em{font-style:normal;font-size:12.5px;color:var(--muted);}
+.sb-msaccount .sb-btn{align-self:flex-start;display:inline-flex;}
 .sb-cmt{background:var(--parchment);border-radius:9px;padding:9px 11px;margin-bottom:8px;}
 .sb-cmt strong{font-size:12.5px;}.sb-cmt em{font-size:11px;color:var(--muted);font-style:normal;margin-left:6px;}
 .sb-cmt p{margin:4px 0 0;font-size:13px;line-height:1.4;}
