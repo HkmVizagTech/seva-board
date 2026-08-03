@@ -1,8 +1,11 @@
 # ---- build ----
 FROM node:20-alpine AS builder
 WORKDIR /app
+# MongoDB's driver has optional native add-ons (kerberos, zstd compression) that try to
+# compile during install; Alpine doesn't ship build tools by default, so add them here.
+RUN apk add --no-cache python3 make g++
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm install --omit=optional
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
