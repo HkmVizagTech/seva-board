@@ -212,20 +212,30 @@ export default function SevaBoardPro() {
   };
 
   const login = async ({ email, password, name, setupPassword }) => {
+    let res;
     try {
-      const res = await fetch("/api/auth/login", {
+      res = await fetch("/api/auth/login", {
         method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, name, setupPassword }),
       });
-      const data = await res.json();
-      if (!res.ok) return { ok: false, error: data.error || "login_failed" };
-      setSession(data);
-      setGate(false);
-      setMeId((prev) => prev || data.memberId || "");
-      loadAll();
-      refreshMsStatus();
-      return { ok: true };
-    } catch (e) { return { ok: false, error: "network_error" }; }
+    } catch (e) {
+      // fetch() itself threw — this is a genuine network failure (offline, DNS, etc.)
+      return { ok: false, error: "network_error" };
+    }
+
+    let data = {};
+    try { data = await res.json(); } catch (e) {
+      // Server responded but not with JSON — surface the real status instead of hiding it.
+      return { ok: false, error: `http_${res.status}` };
+    }
+
+    if (!res.ok) return { ok: false, error: data.error || `http_${res.status}` };
+    setSession(data);
+    setGate(false);
+    setMeId((prev) => prev || data.memberId || "");
+    loadAll();
+    refreshMsStatus();
+    return { ok: true };
   };
 
   const logout = async () => {
@@ -976,9 +986,18 @@ const ERROR_MESSAGES = {
   setup_password_required: "That setup passphrase isn't right.",
   password_too_short: "Password needs to be at least 8 characters.",
   bad_body: "Please fill in every field.",
-  network_error: "Couldn't reach the server — try again.",
+  network_error: "Couldn't reach the server at all — check your internet connection, or the site may be down.",
   login_failed: "Something went wrong — try again.",
+  http_404: "The login page isn't found on the server (404) — the latest deployment may not have finished yet. Wait a minute and try again.",
+  http_500: "The server hit an internal error (500) — usually a missing or wrong environment variable (check MONGODB_URI in Railway). Check your Railway deployment logs.",
+  http_502: "The server didn't respond in time (502) — it may still be starting up or redeploying. Wait a minute and try again.",
+  http_503: "The server is temporarily unavailable (503) — it may still be starting up or redeploying. Wait a minute and try again.",
 };
+function describeError(code) {
+  if (ERROR_MESSAGES[code]) return ERROR_MESSAGES[code];
+  if (code && code.startsWith("http_")) return `Unexpected server response (${code.replace("http_", "")}). Check your Railway deployment logs.`;
+  return "Something went wrong — try again.";
+}
 
 function LoginGate({ onLogin, needsSetup, theme }) {
   const [email, setEmail] = useState("");
@@ -994,7 +1013,7 @@ function LoginGate({ onLogin, needsSetup, theme }) {
     setBusy(true);
     const result = await onLogin({ email: email.trim(), password, name: name.trim(), setupPassword: setupPassword.trim() });
     setBusy(false);
-    if (!result.ok) setError(ERROR_MESSAGES[result.error] || "Something went wrong — try again.");
+    if (!result.ok) setError(describeError(result.error));
   };
 
   return (
