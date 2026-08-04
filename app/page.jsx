@@ -421,7 +421,8 @@ export default function SevaBoardPro() {
   const importJSON = (file) => { const r = new FileReader(); r.onload = () => { try { const d = JSON.parse(r.result); if (d.tasks) setTasks(d.tasks.map(normTask)); if (d.sevas) setSevas(d.sevas); if (d.members) setMembers(d.members); if (d.festivals) setFestivals(d.festivals); toast("Backup restored"); } catch (e) { toast("Could not read that file"); } }; r.readAsText(file); };
 
   /* keyboard */
-  const isAdmin = session && session.role === "admin";
+  const isSuperAdmin = session && session.role === "super_admin";
+  const isAdmin = session && (session.role === "admin" || session.role === "super_admin");
   useEffect(() => {
     const h = (e) => { if (isAdmin && e.key === "n" && !taskModal && !manage && !/input|textarea|select/i.test(e.target.tagName)) { e.preventDefault(); setTaskModal({}); } };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
@@ -445,7 +446,7 @@ export default function SevaBoardPro() {
             {session && (
               <button className="sb-profile-btn" onClick={() => setManage("profile")} title="My profile">
                 <span className="sb-av" style={{ background: colorFor(session.email) }}>{initials(session.name || session.email)}</span>
-                <span className="sb-profile-label">{session.name || session.email}<em>{isAdmin ? "Admin" : "Member"}</em></span>
+                <span className="sb-profile-label">{session.name || session.email}<em>{roleLabel(session.role)}</em></span>
               </button>
             )}
             {!session?.memberId && (
@@ -512,7 +513,7 @@ export default function SevaBoardPro() {
       {manage === "sevas" && <SevaAdminModal sevas={sevas} setSevas={setSevas} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "festivals" && <FestivalModal festivals={festivals} setFestivals={setFestivals} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "email" && <EmailAccountModal status={msStatus} onDisconnect={disconnectMs} onRefresh={refreshMsStatus} onClose={() => setManage(null)} />}
-      {manage === "logins" && <LoginsModal members={members} onClose={() => setManage(null)} toast={toast} />}
+      {manage === "logins" && <LoginsModal members={members} isSuperAdmin={isSuperAdmin} onClose={() => setManage(null)} toast={toast} />}
       {manage === "profile" && (
         <ProfileModal
           session={session} members={members} isAdmin={isAdmin} toast={toast}
@@ -918,7 +919,7 @@ function FestivalModal({ festivals, setFestivals, tasks, onClose }) {
 }
 
 /* ================= logins management ================= */
-function LoginsModal({ members, onClose, toast }) {
+function LoginsModal({ members, isSuperAdmin, onClose, toast }) {
   const [users, setUsers] = useState(null);
   const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
   const [name, setName] = useState(""); const [memberId, setMemberId] = useState(""); const [role, setRole] = useState("member");
@@ -932,7 +933,7 @@ function LoginsModal({ members, onClose, toast }) {
 
   const add = async () => {
     if (!email.trim() || password.length < 8) { toast("Email + password (8+ chars) needed"); return; }
-    const res = await authCall("/api/auth/users", "POST", { email: email.trim(), password, name: name.trim(), memberId: memberId || null, role });
+    const res = await authCall("/api/auth/users", "POST", { email: email.trim(), password, name: name.trim(), memberId: memberId || null, role: isSuperAdmin ? role : "member" });
     const data = await res.json();
     if (res.ok) { toast("Login added"); setEmail(""); setPassword(""); setName(""); setMemberId(""); setRole("member"); load(); }
     else toast(data.error === "already_exists" ? "That email already has a login" : "Couldn't add login");
@@ -944,6 +945,7 @@ function LoginsModal({ members, onClose, toast }) {
     else toast("Couldn't update password");
   };
   const toggleRole = async (u) => {
+    if (!isSuperAdmin || u.role === "super_admin") return; // guarded, but never trust the client alone
     const nextRole = u.role === "admin" ? "member" : "admin";
     const res = await authCall("/api/auth/users", "PUT", { email: u.email, role: nextRole });
     if (res.ok) { toast(`${u.name || u.email} is now ${nextRole}`); load(); }
@@ -952,12 +954,12 @@ function LoginsModal({ members, onClose, toast }) {
   const remove = async (targetEmail) => {
     const res = await authCall("/api/auth/users", "DELETE", { email: targetEmail });
     if (res.ok) { toast("Login removed"); load(); }
-    else toast("Couldn't remove login");
+    else toast(res.status === 403 ? "Only the super admin can remove that account" : "Couldn't remove login");
   };
 
   return (
     <Modal onClose={onClose} title="Logins" wide>
-      <p className="sb-hint" style={{ marginBottom: 12 }}><strong>Admins</strong> can manage sevas, team, festivals, logins, and the email account. <strong>Members</strong> can only view the board and update status, checklists, and comments on tasks. Optionally link a login to a devotee so it drives their "I am…" identity automatically.</p>
+      <p className="sb-hint" style={{ marginBottom: 12 }}><strong>Super Admin</strong> manages everything, including who else is an admin. <strong>Admins</strong> manage sevas, team, festivals, logins, and the email account. <strong>Members</strong> can only view the board and update status, checklists, and comments on tasks. Optionally link a login to a devotee so it drives their "I am…" identity automatically.</p>
       <div className="sb-add-member">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" />
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
@@ -966,10 +968,12 @@ function LoginsModal({ members, onClose, toast }) {
           <option value="">Link to devotee (optional)</option>
           {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
-        <select value={role} onChange={(e) => setRole(e.target.value)} className="sb-select">
-          <option value="member">Member</option>
-          <option value="admin">Admin</option>
-        </select>
+        {isSuperAdmin && (
+          <select value={role} onChange={(e) => setRole(e.target.value)} className="sb-select">
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+          </select>
+        )}
         <button className="sb-btn primary" onClick={add}><Plus size={15} /> Add</button>
       </div>
       {users === null ? <p className="sb-hint">Loading…</p> : !users.length ? <p className="sb-hint">No other logins yet.</p> : (
@@ -979,7 +983,11 @@ function LoginsModal({ members, onClose, toast }) {
               <div className="sb-member-id">
                 <span className="sb-av" style={{ background: colorFor(u.email) }}>{initials(u.name || u.email)}</span>
                 <div><strong>{u.name || u.email}</strong><em>{u.email}{u.memberId ? ` · linked to ${members.find((m) => m.id === u.memberId)?.name || "a devotee"}` : ""}</em></div>
-                <button className={`sb-role-badge ${u.role === "admin" ? "admin" : ""}`} onClick={() => toggleRole(u)} title="Click to toggle role">{u.role === "admin" ? "Admin" : "Member"}</button>
+                {isSuperAdmin && u.role !== "super_admin" ? (
+                  <button className={`sb-role-badge ${u.role === "admin" ? "admin" : ""}`} onClick={() => toggleRole(u)} title="Click to toggle role">{roleLabel(u.role)}</button>
+                ) : (
+                  <span className={`sb-role-badge ${u.role === "super_admin" ? "super" : u.role === "admin" ? "admin" : ""}`}>{roleLabel(u.role)}</span>
+                )}
                 <button className="sb-icon-btn" onClick={() => remove(u.email)} title="Remove login"><Trash2 size={14} /></button>
               </div>
               {resetFor === u.email ? (
@@ -1000,6 +1008,8 @@ function LoginsModal({ members, onClose, toast }) {
 }
 
 /* ================= my profile ================= */
+const roleLabel = (role) => role === "super_admin" ? "Super Admin" : role === "admin" ? "Admin" : "Member";
+
 function ProfileModal({ session, members, isAdmin, onClose, onUpdated, toast }) {
   const [name, setName] = useState(session?.name || "");
   const [memberId, setMemberId] = useState(session?.memberId || "");
@@ -1037,7 +1047,7 @@ function ProfileModal({ session, members, isAdmin, onClose, onUpdated, toast }) 
     <Modal onClose={onClose} title="My profile">
       <div className="sb-profile-head">
         <span className="sb-av lg" style={{ background: colorFor(session.email) }}>{initials(name || session.email)}</span>
-        <div><strong>{session.email}</strong><span className={`sb-role-badge ${isAdmin ? "admin" : ""}`}>{isAdmin ? "Admin" : "Member"}</span></div>
+        <div><strong>{session.email}</strong><span className={`sb-role-badge ${session.role === "super_admin" ? "super" : session.role === "admin" ? "admin" : ""}`}>{roleLabel(session.role)}</span></div>
       </div>
 
       <label className="sb-field"><span>Display name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" /></label>
@@ -1210,6 +1220,7 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-profile-head strong{display:block;font-size:15px;color:var(--ink);}
 .sb-profile-head .sb-role-badge{margin-left:0;margin-top:4px;display:inline-block;}
 .sb-role-badge.admin{background:color-mix(in srgb,var(--saffron) 18%,transparent);color:var(--saffron);border-color:var(--saffron);}
+.sb-role-badge.super{background:color-mix(in srgb,var(--kumkum) 16%,transparent);color:var(--kumkum);border-color:var(--kumkum);}
 .sb-me{background:rgba(255,255,255,.08);color:#F7F1E3;border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:8px 11px;font-size:13px;font-weight:600;outline:none;}
 .sb-me option{color:#20233F;}
 

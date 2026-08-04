@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { countUsers, getUserByEmail, createUser, createSession } from "../../../../lib/mongodb";
+import { countUsers, countSuperAdmins, getUserByEmail, createUser, createSession, setUserRole } from "../../../../lib/mongodb";
 import { hashPassword, verifyPassword } from "../../../../lib/passwords";
 import { SESSION_COOKIE } from "../../../../lib/authGuard";
 
@@ -31,16 +31,16 @@ export async function POST(req) {
     if (total === 0) {
       // Bootstrap: create the very first account. If BOARD_PASSWORD is set, require it as an
       // extra one-time setup passphrase so a stranger can't grab the first account first.
-      // The first account is always admin — everyone added afterward defaults to member.
+      // The first account is always super_admin — everyone added afterward defaults to member.
       const need = process.env.BOARD_PASSWORD;
       if (need && body.setupPassword !== need) {
         return NextResponse.json({ error: "setup_password_required" }, { status: 401 });
       }
       const name = String(body.name || "").trim() || email.split("@")[0];
       const passwordHash = await hashPassword(password);
-      await createUser({ email, passwordHash, name, memberId: body.memberId || null, role: "admin" });
-      const token = await createSession({ email, name, memberId: body.memberId || null, role: "admin" });
-      const res = NextResponse.json({ ok: true, created: true, email, name, memberId: body.memberId || null, role: "admin" });
+      await createUser({ email, passwordHash, name, memberId: body.memberId || null, role: "super_admin" });
+      const token = await createSession({ email, name, memberId: body.memberId || null, role: "super_admin" });
+      const res = NextResponse.json({ ok: true, created: true, email, name, memberId: body.memberId || null, role: "super_admin" });
       setSessionCookie(res, token);
       return res;
     }
@@ -50,8 +50,16 @@ export async function POST(req) {
     const ok = await verifyPassword(password, user.passwordHash);
     if (!ok) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
 
-    const token = await createSession({ email: user.email, name: user.name, memberId: user.memberId, role: user.role });
-    const res = NextResponse.json({ ok: true, email: user.email, name: user.name, memberId: user.memberId, role: user.role || "member" });
+    // One-time migration safety net: if this system predates the super_admin tier and
+    // somehow has none yet, whoever is admin and logs in first claims it automatically.
+    let role = user.role || "member";
+    if (role === "admin" && (await countSuperAdmins()) === 0) {
+      await setUserRole(email, "super_admin");
+      role = "super_admin";
+    }
+
+    const token = await createSession({ email: user.email, name: user.name, memberId: user.memberId, role });
+    const res = NextResponse.json({ ok: true, email: user.email, name: user.name, memberId: user.memberId, role });
     setSessionCookie(res, token);
     return res;
   } catch (e) {

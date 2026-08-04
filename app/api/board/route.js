@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getBoard, saveBoard } from "../../../lib/mongodb";
-import { currentSession } from "../../../lib/authGuard";
+import { currentSession, isAdminRole } from "../../../lib/authGuard";
 import { broadcast } from "../../../lib/realtime";
 
 export const runtime = "nodejs";
@@ -33,7 +33,7 @@ export async function PUT(req) {
     };
 
     // Members can only ever change the tasks array — sevas/team/festivals are admin-only.
-    if (session.role !== "admin") {
+    if (!isAdminRole(session.role)) {
       const existing = (await getBoard()) || {};
       const unchanged = (key) => JSON.stringify(incoming[key]) === JSON.stringify(existing[key] || []);
       if (!unchanged("sevas") || !unchanged("members") || !unchanged("festivals")) {

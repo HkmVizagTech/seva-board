@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { listUsers, getUserByEmail, createUser, setUserPassword, setUserRole, deleteUser } from "../../../../lib/mongodb";
+import { listUsers, getUserByEmail, createUser, setUserPassword, setUserRole, deleteUser, normalizeRole } from "../../../../lib/mongodb";
 import { hashPassword } from "../../../../lib/passwords";
-import { currentSession } from "../../../../lib/authGuard";
+import { currentSession, isAdminRole } from "../../../../lib/authGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,9 +9,13 @@ export const dynamic = "force-dynamic";
 async function requireAdmin(req) {
   const session = await currentSession(req);
   if (!session) return { error: NextResponse.json({ error: "unauthorized" }, { status: 401 }) };
-  if (session.role !== "admin") return { error: NextResponse.json({ error: "forbidden" }, { status: 403 }) };
+  if (!isAdminRole(session.role)) return { error: NextResponse.json({ error: "forbidden" }, { status: 403 }) };
   return { session };
 }
+
+// Only a super_admin may grant admin-tier access or touch an existing admin-tier account.
+// A regular admin can freely manage member accounts only.
+const ADMIN_TIERS = ["admin", "super_admin"];
 
 export async function GET(req) {
   const { error } = await requireAdmin(req);
@@ -21,7 +25,7 @@ export async function GET(req) {
 }
 
 export async function POST(req) {
-  const { error } = await requireAdmin(req);
+  const { session, error } = await requireAdmin(req);
   if (error) return error;
 
   let body;
@@ -29,15 +33,19 @@ export async function POST(req) {
   const email = String(body.email || "").trim().toLowerCase();
   const password = String(body.password || "");
   const name = String(body.name || "").trim();
-  const role = body.role === "admin" ? "admin" : "member";
+  const requestedRole = normalizeRole(body.role);
   if (!email || !password) return NextResponse.json({ error: "bad_body" }, { status: 400 });
   if (password.length < 8) return NextResponse.json({ error: "password_too_short" }, { status: 400 });
+
+  if (ADMIN_TIERS.includes(requestedRole) && session.role !== "super_admin") {
+    return NextResponse.json({ error: "forbidden", message: "Only the super admin can grant admin access." }, { status: 403 });
+  }
 
   try {
     const existing = await getUserByEmail(email);
     if (existing) return NextResponse.json({ error: "already_exists" }, { status: 409 });
     const passwordHash = await hashPassword(password);
-    await createUser({ email, passwordHash, name, memberId: body.memberId || null, role });
+    await createUser({ email, passwordHash, name, memberId: body.memberId || null, role: requestedRole });
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -47,7 +55,7 @@ export async function POST(req) {
 
 // PUT handles two actions: password reset (password provided) and/or role change (role provided).
 export async function PUT(req) {
-  const { error } = await requireAdmin(req);
+  const { session, error } = await requireAdmin(req);
   if (error) return error;
 
   let body;
@@ -56,13 +64,25 @@ export async function PUT(req) {
   if (!email) return NextResponse.json({ error: "bad_body" }, { status: 400 });
 
   try {
+    const target = await getUserByEmail(email);
+    if (!target) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+    // A regular admin can't touch an existing admin/super_admin account at all —
+    // not the password, not the role — only a super_admin can.
+    if (ADMIN_TIERS.includes(target.role) && session.role !== "super_admin") {
+      return NextResponse.json({ error: "forbidden", message: "Only the super admin can manage other admin accounts." }, { status: 403 });
+    }
+    if (body.role && ADMIN_TIERS.includes(normalizeRole(body.role)) && session.role !== "super_admin") {
+      return NextResponse.json({ error: "forbidden", message: "Only the super admin can grant admin access." }, { status: 403 });
+    }
+
     if (body.password) {
       const password = String(body.password);
       if (password.length < 8) return NextResponse.json({ error: "password_too_short" }, { status: 400 });
       await setUserPassword(email, await hashPassword(password));
     }
     if (body.role) {
-      await setUserRole(email, body.role === "admin" ? "admin" : "member");
+      await setUserRole(email, body.role);
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
@@ -72,7 +92,7 @@ export async function PUT(req) {
 }
 
 export async function DELETE(req) {
-  const { error } = await requireAdmin(req);
+  const { session, error } = await requireAdmin(req);
   if (error) return error;
 
   let body;
@@ -81,6 +101,10 @@ export async function DELETE(req) {
   if (!email) return NextResponse.json({ error: "bad_body" }, { status: 400 });
 
   try {
+    const target = await getUserByEmail(email);
+    if (target && ADMIN_TIERS.includes(target.role) && session.role !== "super_admin") {
+      return NextResponse.json({ error: "forbidden", message: "Only the super admin can remove other admin accounts." }, { status: 403 });
+    }
     await deleteUser(email);
     return NextResponse.json({ ok: true });
   } catch (e) {
