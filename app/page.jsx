@@ -21,8 +21,18 @@ const LOCAL_KEY = "sevaBoard:me";
 const ICONS = { Flame, Utensils, Music2, BookOpen, Palette, PenLine, CalendarDays, Wrench, Flower2, HeartHandshake, Coins, Code2, Milk, Sprout };
 const ICON_NAMES = Object.keys(ICONS);
 
-const today = () => new Date().toISOString().slice(0, 10);
-const addDays = (n, base) => { const d = base ? new Date(base + "T00:00:00") : new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+// IMPORTANT: use local calendar date, not UTC. toISOString() returns the UTC date, which
+// for IST (UTC+5:30) is wrong for roughly the first 5.5 hours of every local day — "today"
+// would report yesterday, due dates would be off, and the calendar view would misplace
+// every task by one day. Always build the date string from local getFullYear/Month/Date.
+function localISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+const today = () => localISODate(new Date());
+const addDays = (n, base) => { const d = base ? new Date(base + "T00:00:00") : new Date(); d.setDate(d.getDate() + n); return localISODate(d); };
 
 const DEFAULT_SEVAS = [
   { id: "s1", name: "Deity Worship", icon: "Flame", color: "#E08A1E" },
@@ -85,7 +95,7 @@ const colorFor = (id) => { let h = 0; for (const c of id) h = (h * 31 + c.charCo
 const isOverdue = (t) => t.status !== "done" && t.due && t.due < today();
 const fmtDate = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "";
 const fmtTime = (ts) => new Date(ts).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-const advance = (d, r) => { if (!r || !r.freq) return d; const base = d || today(); if (r.freq === "daily") return addDays(1, base); if (r.freq === "weekly") return addDays(7, base); const x = new Date(base + "T00:00:00"); x.setMonth(x.getMonth() + 1); return x.toISOString().slice(0, 10); };
+const advance = (d, r) => { if (!r || !r.freq) return d; const base = d || today(); if (r.freq === "daily") return addDays(1, base); if (r.freq === "weekly") return addDays(7, base); const x = new Date(base + "T00:00:00"); x.setMonth(x.getMonth() + 1); return localISODate(x); };
 
 function normTask(t) {
   return {
@@ -317,7 +327,10 @@ export default function SevaBoardPro() {
   }, [sevas, members, festivals, tasks]);
   useEffect(() => { if (localLoaded.current) saveLocalPrefs({ meId, theme }); }, [meId, theme]);
 
-  const refresh = () => { toast("Syncing…"); loadAll(); };
+  const refresh = () => {
+    if (savePendingRef.current) { deferredRefetchRef.current = true; toast("You have unsaved changes — syncing once they're saved"); return; }
+    toast("Syncing…"); loadAll();
+  };
   const refreshMsStatus = async () => {
     try { const res = await msAuthCall("GET"); if (res.ok) setMsStatus(await res.json()); } catch (e) {}
   };
@@ -677,7 +690,7 @@ function CalendarView({ tasks, sevaById, festById, setTaskModal, ...shared }) {
   const days = new Date(cur.y, cur.m + 1, 0).getDate();
   const cells = [...Array(startPad).fill(null), ...Array.from({ length: days }, (_, i) => i + 1)];
   const monthName = first.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
-  const tasksOn = (day) => { const ds = new Date(cur.y, cur.m, day).toISOString().slice(0, 10); return tasks.filter((t) => t.due === ds); };
+  const tasksOn = (day) => { const ds = localISODate(new Date(cur.y, cur.m, day)); return tasks.filter((t) => t.due === ds); };
   const move = (d) => setCur((c) => { let m = c.m + d, y = c.y; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } return { y, m }; });
   return (
     <div className="sb-cal">
@@ -691,7 +704,7 @@ function CalendarView({ tasks, sevaById, festById, setTaskModal, ...shared }) {
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => <div key={d} className="sb-cal-dow">{d}</div>)}
         {cells.map((day, i) => {
           if (!day) return <div key={i} className="sb-cal-cell empty" />;
-          const ds = new Date(cur.y, cur.m, day).toISOString().slice(0, 10);
+          const ds = localISODate(new Date(cur.y, cur.m, day));
           const list = tasksOn(day); const isToday = ds === today();
           return (
             <div key={i} className={`sb-cal-cell ${isToday ? "today" : ""}`}>
