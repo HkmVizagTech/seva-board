@@ -50,10 +50,14 @@ export async function POST(req) {
     const ok = await verifyPassword(password, user.passwordHash);
     if (!ok) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
 
-    // One-time migration safety net: if this system predates the super_admin tier and
-    // somehow has none yet, whoever is admin and logs in first claims it automatically.
+    // One-time migration safety net: promote to super_admin (if none exists yet) when this
+    // account is either explicitly "admin" (the old admin/member-only system), OR has no
+    // role field at all — meaning it predates the role system entirely and was never
+    // explicitly assigned anything. An explicit "member" (added later via Manage → Logins)
+    // is never auto-promoted.
+    const isLegacyAccount = user.role === undefined;
     let role = user.role || "member";
-    if (role === "admin" && (await countSuperAdmins()) === 0) {
+    if ((role === "admin" || isLegacyAccount) && (await countSuperAdmins()) === 0) {
       await setUserRole(email, "super_admin");
       role = "super_admin";
     }
