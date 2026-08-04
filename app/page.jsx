@@ -169,6 +169,8 @@ export default function SevaBoardPro() {
   const saveTimer = useRef(null);
   const wsRef = useRef(null);
   const wsRetryRef = useRef(0);
+  const savePendingRef = useRef(false); // a debounced save is scheduled or currently in flight
+  const deferredRefetchRef = useRef(false); // a broadcast arrived while we were busy saving
 
   /* load */
   const applyBoard = (d) => {
@@ -202,7 +204,13 @@ export default function SevaBoardPro() {
       ws.onmessage = (evt) => {
         try {
           const msg = JSON.parse(evt.data);
-          if (msg.type === "board_updated") loadAll(true);
+          if (msg.type === "board_updated") {
+            // If we have unsaved local edits in flight, refetching now would overwrite them
+            // with (briefly) stale server data and cancel their pending save. Defer instead —
+            // the save's own completion handler will run this once it's actually safe to.
+            if (savePendingRef.current) deferredRefetchRef.current = true;
+            else loadAll(true);
+          }
         } catch (e) {}
       };
       ws.onclose = () => {
@@ -298,7 +306,14 @@ export default function SevaBoardPro() {
   useEffect(() => {
     if (!loaded.current) return;
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => saveShared({ sevas, members, festivals, tasks }), 400);
+    savePendingRef.current = true;
+    saveTimer.current = setTimeout(async () => {
+      try { await saveShared({ sevas, members, festivals, tasks }); }
+      finally {
+        savePendingRef.current = false;
+        if (deferredRefetchRef.current) { deferredRefetchRef.current = false; loadAll(true); }
+      }
+    }, 400);
   }, [sevas, members, festivals, tasks]);
   useEffect(() => { if (localLoaded.current) saveLocalPrefs({ meId, theme }); }, [meId, theme]);
 
