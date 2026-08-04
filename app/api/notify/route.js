@@ -2,23 +2,19 @@ import { NextResponse } from "next/server";
 import { getMsAuthDoc } from "../../../lib/mongodb";
 import { sendDelegatedMail } from "../../../lib/msDelegatedAuth";
 import { graphConfigured, sendGraphMail } from "../../../lib/msGraph";
+import { googleConfigured, sendGoogleMail } from "../../../lib/googleMail";
 import { resendConfigured, sendResendMail } from "../../../lib/resendMail";
+import { currentSession } from "../../../lib/authGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function authorized(req) {
-  const need = process.env.BOARD_PASSWORD;
-  if (!need) return true;
-  return req.headers.get("x-board-pass") === need;
-}
 
 function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 export async function POST(req) {
-  if (!authorized(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!(await currentSession(req))) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   let body;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "bad_body" }, { status: 400 }); }
@@ -47,13 +43,19 @@ export async function POST(req) {
 
   const subject = `Seva assigned: ${title}`;
 
-  // Prefer a connected Outlook account (sign-in flow) → app-only Graph → Resend → not configured.
-  const delegatedDoc = await getMsAuthDoc().catch(() => null);
-  const provider = delegatedDoc ? "microsoft-delegated" : graphConfigured() ? "microsoft-apponly" : resendConfigured() ? "resend" : null;
+  // Prefer Google Workspace (shared noreply sender) → connected Outlook account →
+  // app-only Graph → Resend → not configured.
+  const delegatedDoc = googleConfigured() ? null : await getMsAuthDoc().catch(() => null);
+  const provider = googleConfigured() ? "google"
+    : delegatedDoc ? "microsoft-delegated"
+    : graphConfigured() ? "microsoft-apponly"
+    : resendConfigured() ? "resend"
+    : null;
   if (!provider) return NextResponse.json({ error: "email_not_configured" }, { status: 501 });
 
   try {
-    if (provider === "microsoft-delegated") await sendDelegatedMail({ to, subject, html });
+    if (provider === "google") await sendGoogleMail({ to, subject, html });
+    else if (provider === "microsoft-delegated") await sendDelegatedMail({ to, subject, html });
     else if (provider === "microsoft-apponly") await sendGraphMail({ to, subject, html });
     else await sendResendMail({ to, subject, html });
     return NextResponse.json({ ok: true, provider });

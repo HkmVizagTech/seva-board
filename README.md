@@ -21,14 +21,16 @@ in the browser.
    - `MONGODB_URI` → click **"Add Reference"** and point it at the Mongo service's
      `MONGO_URL` (keeps it in sync automatically), or paste the connection string directly.
    - `MONGODB_DB=sevaboard`
-   - `BOARD_PASSWORD` = a shared team passcode (optional — see below)
-   - The Microsoft email variables (see **Email notifications** below)
+   - `BOARD_PASSWORD` (optional — see **Logging in** below)
+   - The email variables (see **Email notifications** below)
 5. **Settings → Networking → Generate Domain** for a free `*.up.railway.app` URL, or attach
    your own domain (e.g. `seva.hkmvizag.org`) with a CNAME.
 6. Deploy. Railway injects `PORT` automatically at runtime — the standalone Next server
    already reads `process.env.PORT`, so no changes are needed. Railway's healthcheck hits
-   `/api/health` (see `railway.toml`), which works even when `BOARD_PASSWORD` is set,
-   since that route isn't gated.
+   `/api/health` (see `railway.toml`), which stays open regardless of login state.
+7. **Log in immediately after the first deploy** and create your account — see
+   **Logging in** below. Until someone does this, the first visitor to the URL can claim
+   the first account, so don't leave this step for later.
 
 ## Alternative: self-host on Coolify
 
@@ -36,12 +38,30 @@ The same Dockerfile works unchanged on Coolify. Two options, both on port **8080
 
 **App container + MongoDB Atlas** — Coolify only runs the app: New Resource →
 Application → your repo → build pack **Dockerfile** → port `8080` → set `MONGODB_URI` to
-your Atlas string, `MONGODB_DB=sevaboard`, `BOARD_PASSWORD` (optional) → attach domain.
+your Atlas string, `MONGODB_DB=sevaboard` → attach domain.
 
 **Fully self-contained** — app + MongoDB in one stack, no Atlas needed: New Resource →
 Docker Compose → your repo (uses the included `docker-compose.yml`, which runs `mongo:7`
-with a persistent volume) → set `BOARD_PASSWORD` (optional) → attach domain to the `app`
-service.
+with a persistent volume) → attach domain to the `app` service.
+
+---
+
+## Logging in
+
+There's no shared passcode anymore — everyone gets their own email + password account.
+
+**First visit ever:** since no account exists yet, the app shows "Create the first
+account" instead of a sign-in form. If `BOARD_PASSWORD` is set, it also asks for that as
+a one-time setup passphrase, so a stranger who finds the URL before you can't grab the
+first account. Once you've created it, that screen never appears again — everyone after
+you signs in normally, and `BOARD_PASSWORD` no longer does anything at that point.
+
+**Adding people after that:** once logged in, go to **Manage → Logins** to add an email +
+password for anyone else who needs access — optionally linking their login to a devotee
+so their "I am…" identity is set automatically when they sign in. You can also reset
+passwords or remove access there.
+
+Sessions last 30 days (httpOnly cookie) and there's a sign-out button in the header.
 
 ---
 
@@ -51,17 +71,20 @@ service.
 |------------------|----------|-----------------------------------------------------------------------|
 | `MONGODB_URI`    | yes      | Railway Mongo reference variable, Atlas string, or `mongodb://mongo:27017` with the bundled compose. |
 | `MONGODB_DB`     | no       | Defaults to `sevaboard`.                                              |
-| `BOARD_PASSWORD` | no       | If set, the app shows a passcode screen and every API call requires it. Leave empty only if the app sits behind Coolify/Cloudflare Access. |
-| `APP_BASE_URL`   | no**     | Public URL of the deployed app, e.g. `https://seva-board.up.railway.app`. Needed for the Outlook "Connect" sign-in flow's redirect URI. |
-| `MS_TENANT_ID`   | no*      | Azure AD tenant ID. Shared by both Microsoft email options below. |
-| `MS_CLIENT_ID`   | no*      | Azure AD app (client) ID. Shared by both Microsoft email options below. |
-| `MS_CLIENT_SECRET` | no*    | Azure AD app client secret. Shared by both Microsoft email options below. |
-| `MS_SENDER_EMAIL`  | no     | Only used by the app-only fallback (no sign-in). Ignored if an account is connected via "Connect Outlook". |
-| `RESEND_API_KEY` | no       | Last-resort fallback, only used if neither Microsoft option is set up. |
+| `BOARD_PASSWORD` | no       | Optional one-time setup passphrase required only when creating the very first login account. Does nothing after that. |
+| `APP_BASE_URL`   | no*      | Public URL of the deployed app, e.g. `https://seva-board.up.railway.app`. Needed only for the Outlook "Connect" sign-in flow's redirect URI. |
+| `GMAIL_USER`     | no**     | A Google Workspace mailbox, e.g. `noreply@harekrishnavizag.org`. Primary email option. |
+| `GMAIL_APP_PASSWORD` | no** | App password for that mailbox (see **Email notifications** below). |
+| `GMAIL_FROM_NAME` | no      | Display name on outgoing mail. Defaults to "Seva Board". |
+| `MS_TENANT_ID`   | no       | Azure AD tenant ID. Shared by both Microsoft email options (used only if Google isn't set up). |
+| `MS_CLIENT_ID`   | no       | Azure AD app (client) ID. |
+| `MS_CLIENT_SECRET` | no     | Azure AD app client secret. |
+| `MS_SENDER_EMAIL`  | no     | Only used by the Microsoft app-only fallback. |
+| `RESEND_API_KEY` | no       | Last-resort fallback if none of the above are set up. |
 | `EMAIL_FROM`     | no       | Sender shown on Resend emails only. |
 
-\* Required together to enable *either* Microsoft email option.
-\*\* Required only for the "Connect Outlook" sign-in flow.
+\* Required only for the Microsoft "Connect Outlook" sign-in flow.
+\*\* Required together to enable Google Workspace sending.
 
 Copy `.env.example` to `.env` for local runs.
 
@@ -69,10 +92,11 @@ Copy `.env.example` to `.env` for local runs.
 
 ## Access & security
 
-- Member phone numbers live on this board, so don't leave it fully open on a public URL.
-  Either set `BOARD_PASSWORD`, or put it behind Coolify's built-in auth / Cloudflare Access.
-- The passcode is a single shared team code (not per-user accounts). When you want real
-  logins with a `seva_admin` role and per-seva permissions, that's the next iteration.
+- Real per-person login now gates the whole app (see **Logging in** above) — no more
+  shared passcode. Passwords are hashed (bcrypt) and sessions are httpOnly cookies.
+- Anyone with a login can manage sevas, team, festivals, other logins, and the connected
+  email account — there's no separate admin role yet. Only add logins for people you trust
+  with all of that.
 
 ---
 
@@ -100,7 +124,7 @@ assignment/unassignment, priority and due-date edits, seva changes, and email se
 each with a timestamp and who did it. It's visible under **Activity & tracking** inside
 the task modal, newest first. Nothing here is editable; it's an audit log, not a field.
 
-## Email notifications (Microsoft 365 / Outlook)
+## Email notifications
 
 Add an email address to a devotee under **Manage → Team**. When they're assigned to a
 task (on creation or by adding them later), the app automatically emails them — with the
@@ -108,18 +132,36 @@ seva, due date, priority, and notes. Every send is logged in that task's activit
 and you can resend manually any time from the **Email seva assignment** button inside a
 task.
 
-There are two ways to wire up the actual sending, both using the same Azure AD app
-registration. **Use option 1** unless you specifically want a fixed, no-login sender.
+### Option 1 — Google Workspace (recommended, fixed shared sender)
 
-### Option 1 — Connect Outlook (recommended, sign-in based)
+The simplest setup: a fixed `noreply@` mailbox that sends every assignment email,
+using Gmail's SMTP relay with an app password. No Google Cloud project, no OAuth
+consent screen — just a mailbox and a password.
 
-You (or anyone using this board) click **Manage → Email account → Connect Outlook**,
-sign into Microsoft normally, and approve the app sending mail as you. No admin consent
-step is required if your tenant allows individual users to consent to this scope — if
-it doesn't, a Global Admin approves it once for the app, same as option 2 below.
-This is the better fit for a personal tool: it's you signing in as yourself, not a
-shared service identity, and it's what makes the tool usable by someone else too — they
-connect their own Outlook account the same way.
+1. In the **Google Workspace Admin console** (admin.google.com), create a new user —
+   e.g. `noreply@harekrishnavizag.org`. A real mailbox, not just an alias.
+2. Sign into that mailbox once (or have your Workspace admin do it), turn on
+   **2-Step Verification** (required for the next step): myaccount.google.com → Security.
+3. Go to **myaccount.google.com/apppasswords**, generate an app password for "Mail",
+   and copy the 16-character code.
+   - If you don't see this option, check **Admin console → Security → Authentication →
+     2-step verification** and make sure "Allow users to generate app passwords" is on
+     for this account's organizational unit.
+4. Set in Railway:
+   ```
+   GMAIL_USER=noreply@harekrishnavizag.org
+   GMAIL_APP_PASSWORD=<the 16-character app password>
+   GMAIL_FROM_NAME=Seva Board
+   ```
+5. Redeploy. No further setup — assignment emails now send automatically from this
+   address for everyone using the board.
+
+### Option 2 — Connect Outlook (Microsoft 365, sign-in based)
+
+Only relevant if you're on a Microsoft 365 tenant instead of / alongside Google
+Workspace. **Manage → Email account → Connect Outlook** lets a person sign into their
+own Microsoft account and approve the app sending mail as them — no admin consent step
+needed if the tenant allows self-consent for this scope.
 
 **One-time Azure AD setup:**
 
@@ -145,14 +187,14 @@ The connected account (email, display name, and refresh token) is stored in Mong
 tokens are refreshed automatically and never shown in the UI. **Manage → Email account**
 shows who's connected and has a **Disconnect** button.
 
-### Option 2 — App-only, fixed sender (advanced, no sign-in)
+### Option 3 — Microsoft app-only, fixed sender (advanced, no sign-in)
 
 Sends as one fixed mailbox with no login step, but needs a Global Admin to grant
 tenant-wide consent up front, and technically that consent lets the app send as *any*
 mailbox in your tenant unless you restrict it (see below). Better suited to a shared
 service mailbox than a personal inbox.
 
-Same app registration as above, plus:
+Same app registration as option 2, plus:
 
 1. **API permissions → Add a permission → Microsoft Graph → Application permissions**
    → add `Mail.Send`.
@@ -175,10 +217,11 @@ Test-ApplicationAccessPolicy -AppId <MS_CLIENT_ID> -Identity mukunda@hkmvizag.or
 
 ### Provider order
 
-If an Outlook account is connected via option 1, it's always used first. Otherwise, if
-`MS_SENDER_EMAIL` (option 2) is set, that's used. Otherwise, if `RESEND_API_KEY` is set,
-that's the fallback. If none of these are configured, the email buttons show a clear
-"not configured" message instead of failing silently.
+If `GMAIL_USER`/`GMAIL_APP_PASSWORD` (option 1) are set, Google Workspace is always used
+first. Otherwise, an Outlook account connected via option 2 is used. Otherwise, if
+`MS_SENDER_EMAIL` (option 3) is set, that's used. Otherwise, if `RESEND_API_KEY` is set,
+that's the last-resort fallback. If none of these are configured, the email buttons show
+a clear "not configured" message instead of failing silently.
 
 ## Notes
 

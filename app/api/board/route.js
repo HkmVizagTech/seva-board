@@ -1,19 +1,12 @@
 import { NextResponse } from "next/server";
 import { getBoard, saveBoard } from "../../../lib/mongodb";
+import { currentSession } from "../../../lib/authGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// If BOARD_PASSWORD is set, every request must carry a matching x-board-pass header.
-// If it's empty/unset, the board is open (put it behind Coolify/Cloudflare Access instead).
-function authorized(req) {
-  const need = process.env.BOARD_PASSWORD;
-  if (!need) return true;
-  return req.headers.get("x-board-pass") === need;
-}
-
 export async function GET(req) {
-  if (!authorized(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!(await currentSession(req))) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   try {
     const board = await getBoard();
     return NextResponse.json(board);
@@ -24,7 +17,7 @@ export async function GET(req) {
 }
 
 export async function PUT(req) {
-  if (!authorized(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!(await currentSession(req))) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   try {
     const body = await req.json();
     if (!body || typeof body !== "object") return NextResponse.json({ error: "bad_body" }, { status: 400 });

@@ -104,14 +104,14 @@ const HIST_ICONS = {
   priority: AlertTriangle, due: Clock, seva: Flame, edited: Pencil, email: Mail, system: Repeat,
 };
 
-/* ================= persistence (self-hosted API + localStorage) ================= */
-const PASS_KEY = "sevaBoardPass";
-const getPass = () => (typeof window !== "undefined" ? (localStorage.getItem(PASS_KEY) || "") : "");
-const setPass = (p) => { if (typeof window !== "undefined") localStorage.setItem(PASS_KEY, p); };
+/* ================= persistence (self-hosted API, cookie session + localStorage prefs) ================= */
 async function apiBoard(method, body) {
-  const headers = { "Content-Type": "application/json" };
-  const p = getPass(); if (p) headers["x-board-pass"] = p;
-  return fetch("/api/board", { method, headers, body: body ? JSON.stringify(body) : undefined });
+  return fetch("/api/board", {
+    method,
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
 }
 async function loadShared() {
   try {
@@ -126,9 +126,15 @@ function loadLocalPrefs() { try { return JSON.parse(localStorage.getItem(LOCAL_K
 function saveLocalPrefs(d) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(d)); } catch (e) {} }
 
 async function msAuthCall(method) {
-  const headers = {};
-  const p = getPass(); if (p) headers["x-board-pass"] = p;
-  return fetch("/api/auth/microsoft/status", { method, headers });
+  return fetch("/api/auth/microsoft/status", { method, credentials: "same-origin" });
+}
+async function authCall(path, method, body) {
+  return fetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
 }
 
 /* ============================================================= */
@@ -158,6 +164,8 @@ export default function SevaBoardPro() {
   const [toasts, setToasts] = useState([]);
   const toast = (msg) => { const id = uid(); setToasts((p) => [...p, { id, msg }]); setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 2600); };
   const [gate, setGate] = useState(false);
+  const [session, setSession] = useState(null); // null = unknown, false = signed out, object = signed in
+  const [needsSetup, setNeedsSetup] = useState(false);
   const saveTimer = useRef(null);
 
   /* load */
@@ -170,7 +178,7 @@ export default function SevaBoardPro() {
   const loadAll = async (silent) => {
     if (!silent) setLoading(true);
     const r = await loadShared();
-    if (r.gate) { setGate(true); setLoading(false); return; }
+    if (r.gate) { setGate(true); setSession(false); setLoading(false); return; }
     setGate(false);
     if (r.data) applyBoard(r.data);
     else {
@@ -180,12 +188,56 @@ export default function SevaBoardPro() {
     loaded.current = true; setLoading(false);
   };
 
+  const checkSession = async () => {
+    try {
+      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
+      const data = await res.json();
+      if (data.authenticated) {
+        setSession(data);
+        setGate(false);
+        setMeId((prev) => prev || data.memberId || "");
+        loadAll();
+        refreshMsStatus();
+      } else {
+        setSession(false);
+        setGate(true);
+        setLoading(false);
+        try {
+          const initRes = await fetch("/api/auth/init");
+          const initData = await initRes.json();
+          setNeedsSetup(!!initData.needsSetup);
+        } catch (e) {}
+      }
+    } catch (e) { setSession(false); setGate(true); setLoading(false); }
+  };
+
+  const login = async ({ email, password, name, setupPassword }) => {
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, name, setupPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) return { ok: false, error: data.error || "login_failed" };
+      setSession(data);
+      setGate(false);
+      setMeId((prev) => prev || data.memberId || "");
+      loadAll();
+      refreshMsStatus();
+      return { ok: true };
+    } catch (e) { return { ok: false, error: "network_error" }; }
+  };
+
+  const logout = async () => {
+    try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch (e) {}
+    setSession(false); setGate(true); setMeId(""); toast("Signed out");
+  };
+
   useEffect(() => {
     const prefs = loadLocalPrefs();
     if (prefs) { setMeId(prefs.meId || ""); setTheme(prefs.theme || "light"); }
     localLoaded.current = true;
-    loadAll();
-    refreshMsStatus();
+    checkSession();
 
     // Handle the redirect back from Microsoft's consent screen (?ms_connect=ok|error).
     const params = new URLSearchParams(window.location.search);
@@ -195,7 +247,8 @@ export default function SevaBoardPro() {
       toast(email ? `Connected to Outlook as ${email}` : "Connected to Outlook");
       refreshMsStatus();
     } else if (result === "error") {
-      toast("Couldn't connect Outlook — try again");
+      const reason = params.get("reason");
+      toast(reason === "login_required" ? "Please sign in first, then connect Outlook" : "Couldn't connect Outlook — try again");
     }
     if (result) {
       params.delete("ms_connect"); params.delete("email"); params.delete("reason");
@@ -273,10 +326,10 @@ export default function SevaBoardPro() {
   const sendEmail = async (task, member) => {
     if (!member?.email) { toast("Add an email for this devotee first"); return false; }
     try {
-      const headers = { "Content-Type": "application/json" };
-      const p = getPass(); if (p) headers["x-board-pass"] = p;
       const res = await fetch("/api/notify", {
-        method: "POST", headers,
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to: member.email, name: member.name, title: task.title, notes: task.notes, seva: sevaById[task.sevaId]?.name || "", due: task.due, priority: task.priority }),
       });
       if (res.ok) { toast(`Emailed ${member.name.split(" ")[0]}`); return true; }
@@ -336,7 +389,7 @@ export default function SevaBoardPro() {
 
   const shared = { sevaById, memberById, festById, members, setStatus, setTaskModal, delTask, patchTask, meId, notifyWhatsApp, notifyEmail };
 
-  if (gate) return <PasscodeGate theme={theme} onSubmit={(p) => { setPass(p); loadAll(); }} />;
+  if (gate) return <LoginGate theme={theme} needsSetup={needsSetup} onLogin={login} />;
 
   return (
     <div className={`sb-root ${theme === "dark" ? "dark" : ""}`}>
@@ -349,6 +402,7 @@ export default function SevaBoardPro() {
             <div><h1>Seva Board</h1><p>Hare Krishna Movement, Visakhapatnam</p></div>
           </div>
           <div className="sb-head-actions">
+            {session && <span className="sb-signedin" title={session.email}>{session.name || session.email}</span>}
             <select className="sb-me" value={meId} onChange={(e) => setMeId(e.target.value)} title="Who are you?">
               <option value="">I am…</option>
               {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
@@ -365,7 +419,9 @@ export default function SevaBoardPro() {
               <button onClick={() => setManage("sevas")}><Flame size={14} /> Sevas</button>
               <button onClick={() => setManage("festivals")}><PartyPopper size={14} /> Festivals</button>
               <button onClick={() => setManage("email")}><Mail size={14} /> Email account</button>
+              <button onClick={() => setManage("logins")}><User size={14} /> Logins</button>
             </Dropdown>
+            <button className="sb-btn ghost icon" onClick={logout} title="Sign out"><X size={15} /></button>
             <button className="sb-btn primary" onClick={() => setTaskModal({})}><Plus size={16} /> New task</button>
           </div>
         </div>
@@ -405,6 +461,7 @@ export default function SevaBoardPro() {
       {manage === "sevas" && <SevaAdminModal sevas={sevas} setSevas={setSevas} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "festivals" && <FestivalModal festivals={festivals} setFestivals={setFestivals} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "email" && <EmailAccountModal status={msStatus} onDisconnect={disconnectMs} onRefresh={refreshMsStatus} onClose={() => setManage(null)} />}
+      {manage === "logins" && <LoginsModal members={members} onClose={() => setManage(null)} toast={toast} />}
 
       <div className="sb-toasts">{toasts.map((t) => <div key={t.id} className="sb-toast"><Check size={14} /> {t.msg}</div>)}</div>
       <footer className="sb-foot">Shared across everyone who opens this board · press <kbd>N</kbd> for a new task · भक्त्या सेवते</footer>
@@ -801,6 +858,77 @@ function FestivalModal({ festivals, setFestivals, tasks, onClose }) {
   );
 }
 
+/* ================= logins management ================= */
+function LoginsModal({ members, onClose, toast }) {
+  const [users, setUsers] = useState(null);
+  const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
+  const [name, setName] = useState(""); const [memberId, setMemberId] = useState("");
+  const [resetFor, setResetFor] = useState(null); const [resetPw, setResetPw] = useState("");
+
+  const load = async () => {
+    try { const res = await authCall("/api/auth/users", "GET"); if (res.ok) setUsers((await res.json()).users || []); }
+    catch (e) { setUsers([]); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const add = async () => {
+    if (!email.trim() || password.length < 8) { toast("Email + password (8+ chars) needed"); return; }
+    const res = await authCall("/api/auth/users", "POST", { email: email.trim(), password, name: name.trim(), memberId: memberId || null });
+    const data = await res.json();
+    if (res.ok) { toast("Login added"); setEmail(""); setPassword(""); setName(""); setMemberId(""); load(); }
+    else toast(data.error === "already_exists" ? "That email already has a login" : "Couldn't add login");
+  };
+  const doReset = async (targetEmail) => {
+    if (resetPw.length < 8) { toast("Password needs 8+ characters"); return; }
+    const res = await authCall("/api/auth/users", "PUT", { email: targetEmail, password: resetPw });
+    if (res.ok) { toast("Password updated"); setResetFor(null); setResetPw(""); }
+    else toast("Couldn't update password");
+  };
+  const remove = async (targetEmail) => {
+    const res = await authCall("/api/auth/users", "DELETE", { email: targetEmail });
+    if (res.ok) { toast("Login removed"); load(); }
+    else toast("Couldn't remove login");
+  };
+
+  return (
+    <Modal onClose={onClose} title="Logins" wide>
+      <p className="sb-hint" style={{ marginBottom: 12 }}>Anyone with a login here can open this board and everything in it. Optionally link a login to a devotee so it drives their "I am…" identity automatically.</p>
+      <div className="sb-add-member">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" />
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (8+ chars)" />
+        <select value={memberId} onChange={(e) => setMemberId(e.target.value)} className="sb-select" style={{ flex: 1 }}>
+          <option value="">Link to devotee (optional)</option>
+          {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        <button className="sb-btn primary" onClick={add}><Plus size={15} /> Add</button>
+      </div>
+      {users === null ? <p className="sb-hint">Loading…</p> : !users.length ? <p className="sb-hint">No other logins yet.</p> : (
+        <div className="sb-member-list">
+          {users.map((u) => (
+            <div key={u.email} className="sb-member">
+              <div className="sb-member-id">
+                <span className="sb-av" style={{ background: colorFor(u.email) }}>{initials(u.name || u.email)}</span>
+                <div><strong>{u.name || u.email}</strong><em>{u.email}{u.memberId ? ` · linked to ${members.find((m) => m.id === u.memberId)?.name || "a devotee"}` : ""}</em></div>
+                <button className="sb-icon-btn" onClick={() => remove(u.email)} title="Remove login"><Trash2 size={14} /></button>
+              </div>
+              {resetFor === u.email ? (
+                <div className="sb-add-member" style={{ marginBottom: 0 }}>
+                  <input type="password" value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="New password (8+ chars)" />
+                  <button className="sb-btn primary sm" onClick={() => doReset(u.email)}>Save</button>
+                  <button className="sb-btn ghost sm" onClick={() => { setResetFor(null); setResetPw(""); }}>Cancel</button>
+                </div>
+              ) : (
+                <button className="sb-btn ghost sm" onClick={() => { setResetFor(u.email); setResetPw(""); }}>Reset password</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 /* ================= email account (Outlook connect) ================= */
 function EmailAccountModal({ status, onDisconnect, onRefresh, onClose }) {
   useEffect(() => { onRefresh(); }, []); // pick up latest status each time it's opened
@@ -842,10 +970,33 @@ function Modal({ children, title, onClose, wide }) {
   );
 }
 
-/* ================= passcode gate ================= */
-function PasscodeGate({ onSubmit, theme }) {
-  const [p, setP] = useState("");
-  const go = () => { if (p.trim()) onSubmit(p.trim()); };
+/* ================= login gate ================= */
+const ERROR_MESSAGES = {
+  invalid_credentials: "Wrong email or password.",
+  setup_password_required: "That setup passphrase isn't right.",
+  password_too_short: "Password needs to be at least 8 characters.",
+  bad_body: "Please fill in every field.",
+  network_error: "Couldn't reach the server — try again.",
+  login_failed: "Something went wrong — try again.",
+};
+
+function LoginGate({ onLogin, needsSetup, theme }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [setupPassword, setSetupPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const go = async () => {
+    setError("");
+    if (!email.trim() || !password) { setError("Please fill in every field."); return; }
+    setBusy(true);
+    const result = await onLogin({ email: email.trim(), password, name: name.trim(), setupPassword: setupPassword.trim() });
+    setBusy(false);
+    if (!result.ok) setError(ERROR_MESSAGES[result.error] || "Something went wrong — try again.");
+  };
+
   return (
     <div className={`sb-root ${theme === "dark" ? "dark" : ""}`}>
       <Styles />
@@ -853,9 +1004,18 @@ function PasscodeGate({ onSubmit, theme }) {
         <div className="sb-gate-card">
           <div className="sb-mark" style={{ margin: "0 auto" }}><Sparkles size={20} /></div>
           <h2>Seva Board</h2>
-          <p>Enter the team passcode to continue.</p>
-          <input type="password" value={p} onChange={(e) => setP(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Passcode" autoFocus />
-          <button className="sb-btn primary" onClick={go}>Enter</button>
+          <p>{needsSetup ? "No account exists yet — create the first one to get started." : "Sign in to continue."}</p>
+
+          {needsSetup && (
+            <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Your name" autoFocus />
+          )}
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Email" autoFocus={!needsSetup} />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder={needsSetup ? "Choose a password (8+ characters)" : "Password"} />
+          {needsSetup && (
+            <input type="password" value={setupPassword} onChange={(e) => setSetupPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Setup passphrase (if one was given to you)" />
+          )}
+          {error && <p className="sb-gate-error">{error}</p>}
+          <button className="sb-btn primary" onClick={go} disabled={busy}>{busy ? "…" : needsSetup ? "Create account" : "Sign in"}</button>
         </div>
       </div>
     </div>
@@ -893,6 +1053,7 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-brand h1{font-family:var(--display);font-weight:600;font-size:26px;margin:0;}
 .sb-brand p{margin:2px 0 0;font-size:12.5px;opacity:.72;}
 .sb-head-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+.sb-signedin{font-size:12.5px;color:rgba(247,241,227,.75);font-weight:600;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .sb-me{background:rgba(255,255,255,.08);color:#F7F1E3;border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:8px 11px;font-size:13px;font-weight:600;outline:none;}
 .sb-me option{color:#20233F;}
 
@@ -1102,6 +1263,7 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-gate-card input{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 13px;font-size:15px;background:var(--parchment);color:var(--ink);outline:none;margin-bottom:12px;}
 .sb-gate-card input:focus{border-color:var(--saffron);box-shadow:0 0 0 3px rgba(224,138,30,.15);}
 .sb-gate-card .sb-btn{width:100%;justify-content:center;}
+.sb-gate-error{color:var(--kumkum);font-size:12.5px;margin:-4px 0 4px;text-align:left;}
 .sb-foot{text-align:center;color:var(--muted);font-size:12px;padding:20px;border-top:1px solid var(--line-soft);font-family:var(--display);font-style:italic;}
 
 @media(max-width:900px){.sb-a-top{grid-template-columns:1fr;}.sb-a-charts{grid-template-columns:1fr;}}
