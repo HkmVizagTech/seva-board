@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { countUsers, countSuperAdmins, getUserByEmail, createUser, createSession, setUserRole } from "../../../../lib/mongodb";
+import { countUsers, getUserByEmail, createUser, createSession, resolveEffectiveRole } from "../../../../lib/mongodb";
 import { hashPassword, verifyPassword } from "../../../../lib/passwords";
 import { SESSION_COOKIE } from "../../../../lib/authGuard";
 
@@ -50,17 +50,8 @@ export async function POST(req) {
     const ok = await verifyPassword(password, user.passwordHash);
     if (!ok) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
 
-    // One-time migration safety net: promote to super_admin (if none exists yet) when this
-    // account is either explicitly "admin" (the old admin/member-only system), OR has no
-    // role field at all — meaning it predates the role system entirely and was never
-    // explicitly assigned anything. An explicit "member" (added later via Manage → Logins)
-    // is never auto-promoted.
-    const isLegacyAccount = user.role === undefined;
-    let role = user.role || "member";
-    if ((role === "admin" || isLegacyAccount) && (await countSuperAdmins()) === 0) {
-      await setUserRole(email, "super_admin");
-      role = "super_admin";
-    }
+    // One-time migration safety net (see lib/mongodb.js resolveEffectiveRole).
+    const role = await resolveEffectiveRole(user);
 
     const token = await createSession({ email: user.email, name: user.name, memberId: user.memberId, role });
     const res = NextResponse.json({ ok: true, email: user.email, name: user.name, memberId: user.memberId, role });

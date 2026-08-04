@@ -8,7 +8,7 @@ import {
   CircleCheck, CircleDot, Circle, Settings, RefreshCw, ChevronRight, Sparkles,
   BarChart3, ChevronLeft, Repeat, MessageSquare, ListChecks, GripVertical,
   Moon, Sun, Send, Star, PartyPopper, Upload, Database, User, Filter, Mail,
-  History as HistoryIcon,
+  History as HistoryIcon, LogOut,
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -473,7 +473,7 @@ export default function SevaBoardPro() {
                 <button onClick={() => setManage("logins")}><User size={14} /> Logins</button>
               </Dropdown>
             )}
-            <button className="sb-btn ghost icon" onClick={logout} title="Sign out"><X size={15} /></button>
+            <button className="sb-btn ghost icon" onClick={logout} title="Sign out"><LogOut size={15} /></button>
             {isAdmin && <button className="sb-btn primary" onClick={() => setTaskModal({})}><Plus size={16} /> New task</button>}
           </div>
         </div>
@@ -519,6 +519,7 @@ export default function SevaBoardPro() {
           session={session} members={members} isAdmin={isAdmin} toast={toast}
           onClose={() => setManage(null)}
           onUpdated={(patch) => { setSession((s) => ({ ...s, ...patch })); if ("memberId" in patch) setMeId(patch.memberId || ""); }}
+          onLogout={() => { setManage(null); logout(); }}
         />
       )}
 
@@ -1010,7 +1011,7 @@ function LoginsModal({ members, isSuperAdmin, onClose, toast }) {
 /* ================= my profile ================= */
 const roleLabel = (role) => role === "super_admin" ? "Super Admin" : role === "admin" ? "Admin" : "Member";
 
-function ProfileModal({ session, members, isAdmin, onClose, onUpdated, toast }) {
+function ProfileModal({ session, members, isAdmin, onClose, onUpdated, onLogout, toast }) {
   const [name, setName] = useState(session?.name || "");
   const [memberId, setMemberId] = useState(session?.memberId || "");
   const [saving, setSaving] = useState(false);
@@ -1069,6 +1070,10 @@ function ProfileModal({ session, members, isAdmin, onClose, onUpdated, toast }) 
           <label className="sb-field"><span>Confirm new password</span><input type="password" value={newPw2} onChange={(e) => setNewPw2(e.target.value)} /></label>
         </div>
         <button className="sb-btn primary" onClick={changePassword} disabled={pwSaving || !curPw || !newPw}><Check size={15} /> {pwSaving ? "Saving…" : "Change password"}</button>
+      </div>
+
+      <div className="sb-section">
+        <button className="sb-btn danger" style={{ width: "100%", justifyContent: "center" }} onClick={onLogout}><LogOut size={15} /> Sign out</button>
       </div>
     </Modal>
   );
