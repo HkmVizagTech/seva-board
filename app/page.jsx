@@ -127,11 +127,28 @@ async function loadShared() {
   try {
     const res = await apiBoard("GET");
     if (res.status === 401) return { gate: true };
+    if (!res.ok) {
+      // A real server-side failure (500, 502 during a redeploy, etc). This is NOT the
+      // same thing as "no board document exists yet" — must never be treated as such.
+      let message = "";
+      try { message = (await res.json())?.message || ""; } catch (e) {}
+      return { error: true, status: res.status, message };
+    }
     const d = await res.json();
-    return { data: d };
-  } catch (e) { console.error(e); return { data: null, error: true }; }
+    return { data: d }; // d is null only when the server explicitly confirms no board exists
+  } catch (e) {
+    // fetch() itself threw — network failure, offline, DNS, etc. Also not "no board exists".
+    console.error(e);
+    return { error: true, networkError: true };
+  }
 }
-async function saveShared(d) { try { await apiBoard("PUT", d); } catch (e) { console.error(e); } }
+async function saveShared(d) {
+  try {
+    const res = await apiBoard("PUT", d);
+    if (!res.ok) { console.error("board save failed", res.status); return false; }
+    return true;
+  } catch (e) { console.error(e); return false; }
+}
 function loadLocalPrefs() { try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || "null"); } catch (e) { return null; } }
 function saveLocalPrefs(d) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(d)); } catch (e) {} }
 
@@ -193,9 +210,18 @@ export default function SevaBoardPro() {
     if (!silent) setLoading(true);
     const r = await loadShared();
     if (r.gate) { setGate(true); setSession(false); setLoading(false); return; }
+    if (r.error) {
+      // Genuine failure — never seed defaults or touch existing local state here, since
+      // doing so would risk overwriting real data with placeholders on the next save.
+      setLoading(false);
+      if (loaded.current) toast(r.networkError ? "Couldn't reach the server — check your connection" : `Couldn't load the board (${r.status || "error"}) — try Sync again shortly`);
+      return;
+    }
     setGate(false);
     if (r.data) applyBoard(r.data);
-    else {
+    else if (!loaded.current) {
+      // Only seed the example board on a genuinely confirmed first-ever run (the server
+      // explicitly returned "no board document exists", not an error) — never on a retry.
       const seed = { sevas: DEFAULT_SEVAS, members: DEFAULT_MEMBERS, festivals: DEFAULT_FESTIVALS, tasks: DEFAULT_TASKS.map(normTask) };
       applyBoard(seed); await saveShared(seed);
     }
@@ -318,8 +344,10 @@ export default function SevaBoardPro() {
     clearTimeout(saveTimer.current);
     savePendingRef.current = true;
     saveTimer.current = setTimeout(async () => {
-      try { await saveShared({ sevas, members, festivals, tasks }); }
-      finally {
+      try {
+        const ok = await saveShared({ sevas, members, festivals, tasks });
+        if (!ok) toast("Couldn't save your last change — check your connection, then use Sync");
+      } finally {
         savePendingRef.current = false;
         if (deferredRefetchRef.current) { deferredRefetchRef.current = false; loadAll(true); }
       }
