@@ -229,7 +229,7 @@ export default function SevaBoardPro() {
       return { ok: false, error: `http_${res.status}` };
     }
 
-    if (!res.ok) return { ok: false, error: data.error || `http_${res.status}` };
+    if (!res.ok) return { ok: false, error: data.error || `http_${res.status}`, detail: data.message };
     setSession(data);
     setGate(false);
     setMeId((prev) => prev || data.memberId || "");
@@ -1006,15 +1006,16 @@ function LoginGate({ onLogin, needsSetup, theme }) {
   const [name, setName] = useState("");
   const [setupPassword, setSetupPassword] = useState("");
   const [error, setError] = useState("");
+  const [detail, setDetail] = useState("");
   const [busy, setBusy] = useState(false);
 
   const go = async () => {
-    setError("");
+    setError(""); setDetail("");
     if (!email.trim() || !password) { setError("Please fill in every field."); return; }
     setBusy(true);
     const result = await onLogin({ email: email.trim(), password, name: name.trim(), setupPassword: setupPassword.trim() });
     setBusy(false);
-    if (!result.ok) setError(describeError(result.error));
+    if (!result.ok) { setError(describeError(result.error)); if (result.detail) setDetail(result.detail); }
   };
 
   return (
@@ -1035,6 +1036,7 @@ function LoginGate({ onLogin, needsSetup, theme }) {
             <input type="password" value={setupPassword} onChange={(e) => setSetupPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Setup passphrase (if one was given to you)" />
           )}
           {error && <p className="sb-gate-error">{error}</p>}
+          {detail && <p className="sb-gate-detail">Technical detail (copy this to share): <code>{detail}</code></p>}
           <button className="sb-btn primary" onClick={go} disabled={busy}>{busy ? "…" : needsSetup ? "Create account" : "Sign in"}</button>
         </div>
       </div>
@@ -1284,6 +1286,8 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-gate-card input:focus{border-color:var(--saffron);box-shadow:0 0 0 3px rgba(224,138,30,.15);}
 .sb-gate-card .sb-btn{width:100%;justify-content:center;}
 .sb-gate-error{color:var(--kumkum);font-size:12.5px;margin:-4px 0 4px;text-align:left;}
+.sb-gate-detail{font-size:11px;color:var(--muted);text-align:left;margin:0 0 8px;word-break:break-word;}
+.sb-gate-detail code{background:var(--line-soft);padding:1px 5px;border-radius:4px;font-family:monospace;}
 .sb-foot{text-align:center;color:var(--muted);font-size:12px;padding:20px;border-top:1px solid var(--line-soft);font-family:var(--display);font-style:italic;}
 
 @media(max-width:900px){.sb-a-top{grid-template-columns:1fr;}.sb-a-charts{grid-template-columns:1fr;}}
