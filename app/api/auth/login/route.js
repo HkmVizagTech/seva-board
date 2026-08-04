@@ -31,15 +31,16 @@ export async function POST(req) {
     if (total === 0) {
       // Bootstrap: create the very first account. If BOARD_PASSWORD is set, require it as an
       // extra one-time setup passphrase so a stranger can't grab the first account first.
+      // The first account is always admin — everyone added afterward defaults to member.
       const need = process.env.BOARD_PASSWORD;
       if (need && body.setupPassword !== need) {
         return NextResponse.json({ error: "setup_password_required" }, { status: 401 });
       }
       const name = String(body.name || "").trim() || email.split("@")[0];
       const passwordHash = await hashPassword(password);
-      await createUser({ email, passwordHash, name, memberId: body.memberId || null });
-      const token = await createSession({ email, name, memberId: body.memberId || null });
-      const res = NextResponse.json({ ok: true, created: true, email, name, memberId: body.memberId || null });
+      await createUser({ email, passwordHash, name, memberId: body.memberId || null, role: "admin" });
+      const token = await createSession({ email, name, memberId: body.memberId || null, role: "admin" });
+      const res = NextResponse.json({ ok: true, created: true, email, name, memberId: body.memberId || null, role: "admin" });
       setSessionCookie(res, token);
       return res;
     }
@@ -49,8 +50,8 @@ export async function POST(req) {
     const ok = await verifyPassword(password, user.passwordHash);
     if (!ok) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
 
-    const token = await createSession({ email: user.email, name: user.name, memberId: user.memberId });
-    const res = NextResponse.json({ ok: true, email: user.email, name: user.name, memberId: user.memberId });
+    const token = await createSession({ email: user.email, name: user.name, memberId: user.memberId, role: user.role });
+    const res = NextResponse.json({ ok: true, email: user.email, name: user.name, memberId: user.memberId, role: user.role || "member" });
     setSessionCookie(res, token);
     return res;
   } catch (e) {

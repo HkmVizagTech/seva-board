@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getBoard, saveBoard } from "../../../lib/mongodb";
 import { currentSession } from "../../../lib/authGuard";
+import { broadcast } from "../../../lib/realtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,17 +18,31 @@ export async function GET(req) {
 }
 
 export async function PUT(req) {
-  if (!(await currentSession(req))) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const session = await currentSession(req);
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
     if (!body || typeof body !== "object") return NextResponse.json({ error: "bad_body" }, { status: 400 });
-    await saveBoard({
+
+    const incoming = {
       sevas: body.sevas || [],
       members: body.members || [],
       festivals: body.festivals || [],
       tasks: body.tasks || [],
-      updatedAt: Date.now(),
-    });
+    };
+
+    // Members can only ever change the tasks array — sevas/team/festivals are admin-only.
+    if (session.role !== "admin") {
+      const existing = (await getBoard()) || {};
+      const unchanged = (key) => JSON.stringify(incoming[key]) === JSON.stringify(existing[key] || []);
+      if (!unchanged("sevas") || !unchanged("members") || !unchanged("festivals")) {
+        return NextResponse.json({ error: "forbidden", message: "Only admins can change sevas, team, or festivals." }, { status: 403 });
+      }
+    }
+
+    await saveBoard({ ...incoming, updatedAt: Date.now() });
+    broadcast({ type: "board_updated" });
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error(e);

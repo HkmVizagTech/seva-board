@@ -6,7 +6,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req) {
-  if (!(await currentSession(req))) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const session = await currentSession(req);
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (session.role !== "admin") return NextResponse.json({ error: "forbidden" }, { status: 403 });
   try {
     const status = await getDelegatedStatus();
     return NextResponse.json(status);
@@ -17,7 +19,9 @@ export async function GET(req) {
 }
 
 export async function DELETE(req) {
-  if (!(await currentSession(req))) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const session = await currentSession(req);
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (session.role !== "admin") return NextResponse.json({ error: "forbidden" }, { status: 403 });
   try {
     await disconnectDelegated();
     return NextResponse.json({ ok: true });

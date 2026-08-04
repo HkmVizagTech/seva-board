@@ -167,6 +167,8 @@ export default function SevaBoardPro() {
   const [session, setSession] = useState(null); // null = unknown, false = signed out, object = signed in
   const [needsSetup, setNeedsSetup] = useState(false);
   const saveTimer = useRef(null);
+  const wsRef = useRef(null);
+  const wsRetryRef = useRef(0);
 
   /* load */
   const applyBoard = (d) => {
@@ -188,6 +190,30 @@ export default function SevaBoardPro() {
     loaded.current = true; setLoading(false);
   };
 
+  const connectWs = () => {
+    if (typeof window === "undefined") return;
+    if (wsRef.current && (wsRef.current.readyState === 0 || wsRef.current.readyState === 1)) return; // already connecting/open
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${window.location.host}/ws`;
+    try {
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+      ws.onopen = () => { wsRetryRef.current = 0; };
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === "board_updated") loadAll(true);
+        } catch (e) {}
+      };
+      ws.onclose = () => {
+        const delay = Math.min(1000 * 2 ** wsRetryRef.current, 15000);
+        wsRetryRef.current += 1;
+        setTimeout(connectWs, delay);
+      };
+      ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    } catch (e) {}
+  };
+
   const checkSession = async () => {
     try {
       const res = await fetch("/api/auth/session", { credentials: "same-origin" });
@@ -198,6 +224,7 @@ export default function SevaBoardPro() {
         setMeId((prev) => prev || data.memberId || "");
         loadAll();
         refreshMsStatus();
+        connectWs();
       } else {
         setSession(false);
         setGate(true);
@@ -235,11 +262,13 @@ export default function SevaBoardPro() {
     setMeId((prev) => prev || data.memberId || "");
     loadAll();
     refreshMsStatus();
+    connectWs();
     return { ok: true };
   };
 
   const logout = async () => {
     try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch (e) {}
+    if (wsRef.current) { try { wsRef.current.onclose = null; wsRef.current.close(); } catch (e) {} wsRef.current = null; }
     setSession(false); setGate(true); setMeId(""); toast("Signed out");
   };
 
@@ -392,12 +421,13 @@ export default function SevaBoardPro() {
   const importJSON = (file) => { const r = new FileReader(); r.onload = () => { try { const d = JSON.parse(r.result); if (d.tasks) setTasks(d.tasks.map(normTask)); if (d.sevas) setSevas(d.sevas); if (d.members) setMembers(d.members); if (d.festivals) setFestivals(d.festivals); toast("Backup restored"); } catch (e) { toast("Could not read that file"); } }; r.readAsText(file); };
 
   /* keyboard */
+  const isAdmin = session && session.role === "admin";
   useEffect(() => {
-    const h = (e) => { if (e.key === "n" && !taskModal && !manage && !/input|textarea|select/i.test(e.target.tagName)) { e.preventDefault(); setTaskModal({}); } };
+    const h = (e) => { if (isAdmin && e.key === "n" && !taskModal && !manage && !/input|textarea|select/i.test(e.target.tagName)) { e.preventDefault(); setTaskModal({}); } };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
-  }, [taskModal, manage]);
+  }, [taskModal, manage, isAdmin]);
 
-  const shared = { sevaById, memberById, festById, members, setStatus, setTaskModal, delTask, patchTask, meId, notifyWhatsApp, notifyEmail };
+  const shared = { sevaById, memberById, festById, members, setStatus, setTaskModal, delTask, patchTask, meId, notifyWhatsApp, notifyEmail, isAdmin };
 
   if (gate) return <LoginGate theme={theme} needsSetup={needsSetup} onLogin={login} />;
 
@@ -412,27 +442,31 @@ export default function SevaBoardPro() {
             <div><h1>Seva Board</h1><p>Hare Krishna Movement, Visakhapatnam</p></div>
           </div>
           <div className="sb-head-actions">
-            {session && <span className="sb-signedin" title={session.email}>{session.name || session.email}</span>}
+            {session && <span className="sb-signedin" title={session.email}>{session.name || session.email}{!isAdmin && <em> · member</em>}</span>}
             <select className="sb-me" value={meId} onChange={(e) => setMeId(e.target.value)} title="Who are you?">
               <option value="">I am…</option>
               {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
             <button className="sb-btn ghost icon" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle evening mode">{theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}</button>
             <button className="sb-btn ghost icon" onClick={refresh} title="Sync"><RefreshCw size={15} className={loading ? "sb-spin" : ""} /></button>
-            <Dropdown label={<><Database size={15} /> Backup</>}>
-              <button onClick={exportCSV}><Download size={14} /> Export CSV</button>
-              <button onClick={exportJSON}><Download size={14} /> Export JSON</button>
-              <label className="sb-file"><Upload size={14} /> Import JSON<input type="file" accept="application/json" onChange={(e) => e.target.files[0] && importJSON(e.target.files[0])} /></label>
-            </Dropdown>
-            <Dropdown label={<><Settings size={15} /> Manage</>}>
-              <button onClick={() => setManage("team")}><Users size={14} /> Team</button>
-              <button onClick={() => setManage("sevas")}><Flame size={14} /> Sevas</button>
-              <button onClick={() => setManage("festivals")}><PartyPopper size={14} /> Festivals</button>
-              <button onClick={() => setManage("email")}><Mail size={14} /> Email account</button>
-              <button onClick={() => setManage("logins")}><User size={14} /> Logins</button>
-            </Dropdown>
+            {isAdmin && (
+              <Dropdown label={<><Database size={15} /> Backup</>}>
+                <button onClick={exportCSV}><Download size={14} /> Export CSV</button>
+                <button onClick={exportJSON}><Download size={14} /> Export JSON</button>
+                <label className="sb-file"><Upload size={14} /> Import JSON<input type="file" accept="application/json" onChange={(e) => e.target.files[0] && importJSON(e.target.files[0])} /></label>
+              </Dropdown>
+            )}
+            {isAdmin && (
+              <Dropdown label={<><Settings size={15} /> Manage</>}>
+                <button onClick={() => setManage("team")}><Users size={14} /> Team</button>
+                <button onClick={() => setManage("sevas")}><Flame size={14} /> Sevas</button>
+                <button onClick={() => setManage("festivals")}><PartyPopper size={14} /> Festivals</button>
+                <button onClick={() => setManage("email")}><Mail size={14} /> Email account</button>
+                <button onClick={() => setManage("logins")}><User size={14} /> Logins</button>
+              </Dropdown>
+            )}
             <button className="sb-btn ghost icon" onClick={logout} title="Sign out"><X size={15} /></button>
-            <button className="sb-btn primary" onClick={() => setTaskModal({})}><Plus size={16} /> New task</button>
+            {isAdmin && <button className="sb-btn primary" onClick={() => setTaskModal({})}><Plus size={16} /> New task</button>}
           </div>
         </div>
       </header>
@@ -466,7 +500,7 @@ export default function SevaBoardPro() {
         {view === "analytics" && <Analytics tasks={tasks} sevas={sevas} members={members} />}
       </main>
 
-      {taskModal && <TaskModal task={taskModal} sevas={sevas} members={members} festivals={festivals} meId={meId} onSave={saveTask} onClose={() => setTaskModal(null)} onDelete={taskModal.id ? () => { delTask(taskModal.id); setTaskModal(null); } : null} onNotify={notifyWhatsApp} onEmail={notifyEmail} />}
+      {taskModal && <TaskModal task={taskModal} sevas={sevas} members={members} festivals={festivals} meId={meId} isAdmin={isAdmin} onSave={saveTask} onClose={() => setTaskModal(null)} onDelete={isAdmin && taskModal.id ? () => { delTask(taskModal.id); setTaskModal(null); } : null} onNotify={notifyWhatsApp} onEmail={notifyEmail} />}
       {manage === "team" && <TeamModal members={members} sevas={sevas} setMembers={setMembers} onClose={() => setManage(null)} />}
       {manage === "sevas" && <SevaAdminModal sevas={sevas} setSevas={setSevas} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "festivals" && <FestivalModal festivals={festivals} setFestivals={setFestivals} tasks={tasks} onClose={() => setManage(null)} />}
@@ -508,7 +542,7 @@ function Avatars({ ids, memberById }) {
 }
 
 /* ================= task card ================= */
-function TaskCard({ task, sevaById, memberById, festById, setStatus, setTaskModal, delTask, draggable }) {
+function TaskCard({ task, sevaById, memberById, festById, setStatus, setTaskModal, delTask, draggable, isAdmin }) {
   const seva = sevaById[task.sevaId]; const fest = festById[task.festivalId];
   const pr = PRIORITIES.find((p) => p.id === task.priority); const over = isOverdue(task);
   const doneSub = task.subtasks.filter((s) => s.done).length;
@@ -522,8 +556,8 @@ function TaskCard({ task, sevaById, memberById, festById, setStatus, setTaskModa
           {task.recurrence?.freq && <span className="sb-chip rep"><Repeat size={10} /></span>}
         </div>
         <div className="sb-card-tools">
-          <button onClick={() => setTaskModal(task)} title="Edit"><Pencil size={13} /></button>
-          <button onClick={() => delTask(task.id)} title="Delete"><Trash2 size={13} /></button>
+          <button onClick={() => setTaskModal(task)} title={isAdmin ? "Edit" : "View"}>{isAdmin ? <Pencil size={13} /> : <ChevronRight size={13} />}</button>
+          {isAdmin && <button onClick={() => delTask(task.id)} title="Delete"><Trash2 size={13} /></button>}
         </div>
       </div>
       <h4 onClick={() => setTaskModal(task)}>{task.title}</h4>
@@ -683,13 +717,13 @@ function Analytics({ tasks, sevas, members }) {
 const MiniStat = ({ n, label, c }) => <div className="sb-mini" style={{ "--c": c }}><strong>{n}</strong><span>{label}</span></div>;
 
 /* ================= task modal ================= */
-function TaskModal({ task, sevas, members, festivals, meId, onSave, onClose, onDelete, onNotify, onEmail }) {
+function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onClose, onDelete, onNotify, onEmail }) {
   const [f, setF] = useState(() => normTask({ ...task, sevaId: task.sevaId || sevas[0]?.id || "" }));
   const [cmt, setCmt] = useState("");
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const eligible = members.filter((m) => !f.sevaId || m.sevaIds.includes(f.sevaId));
   const others = members.filter((m) => !eligible.includes(m));
-  const toggleAssignee = (id) => set("assigneeIds", f.assigneeIds.includes(id) ? f.assigneeIds.filter((x) => x !== id) : [...f.assigneeIds, id]);
+  const toggleAssignee = (id) => { if (!isAdmin) return; set("assigneeIds", f.assigneeIds.includes(id) ? f.assigneeIds.filter((x) => x !== id) : [...f.assigneeIds, id]); };
   const addSub = () => set("subtasks", [...f.subtasks, { id: uid(), text: "", done: false }]);
   const setSub = (id, patch) => set("subtasks", f.subtasks.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   const delSub = (id) => set("subtasks", f.subtasks.filter((s) => s.id !== id));
@@ -698,33 +732,34 @@ function TaskModal({ task, sevas, members, festivals, meId, onSave, onClose, onD
 
   return (
     <Modal onClose={onClose} title={task.id ? "Task details" : "New task"} wide>
-      <label className="sb-field"><span>Task</span><input autoFocus value={f.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Prepare Ekadashi prasadam" /></label>
-      <label className="sb-field"><span>Details</span><textarea rows={2} value={f.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Any instructions…" /></label>
+      {!isAdmin && <p className="sb-hint" style={{ marginBottom: 12 }}>You can update status, tick off steps, and add comments. Only admins can edit the task's details.</p>}
+      <label className="sb-field"><span>Task</span><input autoFocus={isAdmin} disabled={!isAdmin} value={f.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Prepare Ekadashi prasadam" /></label>
+      <label className="sb-field"><span>Details</span><textarea rows={2} disabled={!isAdmin} value={f.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Any instructions…" /></label>
       <div className="sb-row2">
-        <label className="sb-field"><span>Seva</span><select value={f.sevaId} onChange={(e) => set("sevaId", e.target.value)}>{sevas.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
-        <label className="sb-field"><span>Festival</span><select value={f.festivalId} onChange={(e) => set("festivalId", e.target.value)}><option value="">None</option>{festivals.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+        <label className="sb-field"><span>Seva</span><select disabled={!isAdmin} value={f.sevaId} onChange={(e) => set("sevaId", e.target.value)}>{sevas.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+        <label className="sb-field"><span>Festival</span><select disabled={!isAdmin} value={f.festivalId} onChange={(e) => set("festivalId", e.target.value)}><option value="">None</option>{festivals.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
       </div>
       <div className="sb-field"><span>Assign to</span>
         <div className="sb-assign-pick">
-          {eligible.map((m) => <button key={m.id} className={`sb-tag ${f.assigneeIds.includes(m.id) ? "on" : ""}`} style={{ "--c": colorFor(m.id) }} onClick={() => toggleAssignee(m.id)}>{m.name}</button>)}
+          {eligible.map((m) => <button key={m.id} disabled={!isAdmin} className={`sb-tag ${f.assigneeIds.includes(m.id) ? "on" : ""}`} style={{ "--c": colorFor(m.id) }} onClick={() => toggleAssignee(m.id)}>{m.name}</button>)}
           {others.length > 0 && <span className="sb-tag-div">others</span>}
-          {others.map((m) => <button key={m.id} className={`sb-tag ${f.assigneeIds.includes(m.id) ? "on" : ""}`} style={{ "--c": colorFor(m.id) }} onClick={() => toggleAssignee(m.id)}>{m.name}</button>)}
+          {others.map((m) => <button key={m.id} disabled={!isAdmin} className={`sb-tag ${f.assigneeIds.includes(m.id) ? "on" : ""}`} style={{ "--c": colorFor(m.id) }} onClick={() => toggleAssignee(m.id)}>{m.name}</button>)}
         </div>
       </div>
       <div className="sb-row3">
-        <label className="sb-field"><span>Priority</span><select value={f.priority} onChange={(e) => set("priority", e.target.value)}>{PRIORITIES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
+        <label className="sb-field"><span>Priority</span><select disabled={!isAdmin} value={f.priority} onChange={(e) => set("priority", e.target.value)}>{PRIORITIES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
         <label className="sb-field"><span>Status</span><select value={f.status} onChange={(e) => set("status", e.target.value)}>{STATUSES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select></label>
-        <label className="sb-field"><span>Due date</span><input type="date" value={f.due} onChange={(e) => set("due", e.target.value)} /></label>
+        <label className="sb-field"><span>Due date</span><input type="date" disabled={!isAdmin} value={f.due} onChange={(e) => set("due", e.target.value)} /></label>
       </div>
-      <label className="sb-field"><span><Repeat size={12} /> Repeats</span><select value={f.recurrence?.freq || ""} onChange={(e) => set("recurrence", e.target.value ? { freq: e.target.value, interval: 1 } : null)}>{RECUR.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
+      <label className="sb-field"><span><Repeat size={12} /> Repeats</span><select disabled={!isAdmin} value={f.recurrence?.freq || ""} onChange={(e) => set("recurrence", e.target.value ? { freq: e.target.value, interval: 1 } : null)}>{RECUR.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
 
       <div className="sb-section">
-        <div className="sb-section-head"><span><ListChecks size={14} /> Checklist</span><button className="sb-mini-add" onClick={addSub}><Plus size={13} /> Add step</button></div>
+        <div className="sb-section-head"><span><ListChecks size={14} /> Checklist</span>{isAdmin && <button className="sb-mini-add" onClick={addSub}><Plus size={13} /> Add step</button>}</div>
         {f.subtasks.map((s) => (
           <div key={s.id} className="sb-sub-row">
             <button className={`sb-check ${s.done ? "on" : ""}`} onClick={() => setSub(s.id, { done: !s.done })}>{s.done && <Check size={12} />}</button>
-            <input value={s.text} onChange={(e) => setSub(s.id, { text: e.target.value })} placeholder="Step…" className={s.done ? "done" : ""} />
-            <button className="sb-icon-btn" onClick={() => delSub(s.id)}><X size={14} /></button>
+            <input value={s.text} disabled={!isAdmin} onChange={(e) => setSub(s.id, { text: e.target.value })} placeholder="Step…" className={s.done ? "done" : ""} />
+            {isAdmin && <button className="sb-icon-btn" onClick={() => delSub(s.id)}><X size={14} /></button>}
           </div>
         ))}
         {!f.subtasks.length && <p className="sb-hint">Break the seva into steps the devotee can tick off.</p>}
@@ -739,10 +774,10 @@ function TaskModal({ task, sevas, members, festivals, meId, onSave, onClose, onD
         </div>
       </div>
 
-      {assignedMembers.some((m) => m.phone) && (
+      {isAdmin && assignedMembers.some((m) => m.phone) && (
         <div className="sb-notify"><span>Notify on WhatsApp:</span>{assignedMembers.filter((m) => m.phone).map((m) => <button key={m.id} className="sb-wa" onClick={() => onNotify(f, m)}><Send size={12} /> {m.name.split(" ")[0]}</button>)}</div>
       )}
-      {assignedMembers.some((m) => m.email) && (
+      {isAdmin && assignedMembers.some((m) => m.email) && (
         <div className="sb-notify email"><span>Email seva assignment:</span>{assignedMembers.filter((m) => m.email).map((m) => <button key={m.id} className="sb-mailbtn" onClick={() => onEmail(f, m)}><Mail size={12} /> {m.name.split(" ")[0]}</button>)}</div>
       )}
 
@@ -872,7 +907,7 @@ function FestivalModal({ festivals, setFestivals, tasks, onClose }) {
 function LoginsModal({ members, onClose, toast }) {
   const [users, setUsers] = useState(null);
   const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
-  const [name, setName] = useState(""); const [memberId, setMemberId] = useState("");
+  const [name, setName] = useState(""); const [memberId, setMemberId] = useState(""); const [role, setRole] = useState("member");
   const [resetFor, setResetFor] = useState(null); const [resetPw, setResetPw] = useState("");
 
   const load = async () => {
@@ -883,9 +918,9 @@ function LoginsModal({ members, onClose, toast }) {
 
   const add = async () => {
     if (!email.trim() || password.length < 8) { toast("Email + password (8+ chars) needed"); return; }
-    const res = await authCall("/api/auth/users", "POST", { email: email.trim(), password, name: name.trim(), memberId: memberId || null });
+    const res = await authCall("/api/auth/users", "POST", { email: email.trim(), password, name: name.trim(), memberId: memberId || null, role });
     const data = await res.json();
-    if (res.ok) { toast("Login added"); setEmail(""); setPassword(""); setName(""); setMemberId(""); load(); }
+    if (res.ok) { toast("Login added"); setEmail(""); setPassword(""); setName(""); setMemberId(""); setRole("member"); load(); }
     else toast(data.error === "already_exists" ? "That email already has a login" : "Couldn't add login");
   };
   const doReset = async (targetEmail) => {
@@ -893,6 +928,12 @@ function LoginsModal({ members, onClose, toast }) {
     const res = await authCall("/api/auth/users", "PUT", { email: targetEmail, password: resetPw });
     if (res.ok) { toast("Password updated"); setResetFor(null); setResetPw(""); }
     else toast("Couldn't update password");
+  };
+  const toggleRole = async (u) => {
+    const nextRole = u.role === "admin" ? "member" : "admin";
+    const res = await authCall("/api/auth/users", "PUT", { email: u.email, role: nextRole });
+    if (res.ok) { toast(`${u.name || u.email} is now ${nextRole}`); load(); }
+    else toast("Couldn't change role");
   };
   const remove = async (targetEmail) => {
     const res = await authCall("/api/auth/users", "DELETE", { email: targetEmail });
@@ -902,7 +943,7 @@ function LoginsModal({ members, onClose, toast }) {
 
   return (
     <Modal onClose={onClose} title="Logins" wide>
-      <p className="sb-hint" style={{ marginBottom: 12 }}>Anyone with a login here can open this board and everything in it. Optionally link a login to a devotee so it drives their "I am…" identity automatically.</p>
+      <p className="sb-hint" style={{ marginBottom: 12 }}><strong>Admins</strong> can manage sevas, team, festivals, logins, and the email account. <strong>Members</strong> can only view the board and update status, checklists, and comments on tasks. Optionally link a login to a devotee so it drives their "I am…" identity automatically.</p>
       <div className="sb-add-member">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" />
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
@@ -910,6 +951,10 @@ function LoginsModal({ members, onClose, toast }) {
         <select value={memberId} onChange={(e) => setMemberId(e.target.value)} className="sb-select" style={{ flex: 1 }}>
           <option value="">Link to devotee (optional)</option>
           {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        <select value={role} onChange={(e) => setRole(e.target.value)} className="sb-select">
+          <option value="member">Member</option>
+          <option value="admin">Admin</option>
         </select>
         <button className="sb-btn primary" onClick={add}><Plus size={15} /> Add</button>
       </div>
@@ -920,6 +965,7 @@ function LoginsModal({ members, onClose, toast }) {
               <div className="sb-member-id">
                 <span className="sb-av" style={{ background: colorFor(u.email) }}>{initials(u.name || u.email)}</span>
                 <div><strong>{u.name || u.email}</strong><em>{u.email}{u.memberId ? ` · linked to ${members.find((m) => m.id === u.memberId)?.name || "a devotee"}` : ""}</em></div>
+                <button className={`sb-role-badge ${u.role === "admin" ? "admin" : ""}`} onClick={() => toggleRole(u)} title="Click to toggle role">{u.role === "admin" ? "Admin" : "Member"}</button>
                 <button className="sb-icon-btn" onClick={() => remove(u.email)} title="Remove login"><Trash2 size={14} /></button>
               </div>
               {resetFor === u.email ? (
@@ -1075,7 +1121,10 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-brand h1{font-family:var(--display);font-weight:600;font-size:26px;margin:0;}
 .sb-brand p{margin:2px 0 0;font-size:12.5px;opacity:.72;}
 .sb-head-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
-.sb-signedin{font-size:12.5px;color:rgba(247,241,227,.75);font-weight:600;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sb-signedin{font-size:12.5px;color:rgba(247,241,227,.75);font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sb-signedin em{font-style:normal;opacity:.7;font-weight:500;}
+.sb-role-badge{border:1px solid var(--line);background:var(--line-soft);color:var(--muted);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:700;margin-left:auto;flex-shrink:0;}
+.sb-role-badge.admin{background:color-mix(in srgb,var(--saffron) 18%,transparent);color:var(--saffron);border-color:var(--saffron);}
 .sb-me{background:rgba(255,255,255,.08);color:#F7F1E3;border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:8px 11px;font-size:13px;font-weight:600;outline:none;}
 .sb-me option{color:#20233F;}
 
