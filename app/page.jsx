@@ -442,11 +442,18 @@ export default function SevaBoardPro() {
             <div><h1>Seva Board</h1><p>Hare Krishna Movement, Visakhapatnam</p></div>
           </div>
           <div className="sb-head-actions">
-            {session && <span className="sb-signedin" title={session.email}>{session.name || session.email}{!isAdmin && <em> · member</em>}</span>}
-            <select className="sb-me" value={meId} onChange={(e) => setMeId(e.target.value)} title="Who are you?">
-              <option value="">I am…</option>
-              {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
+            {session && (
+              <button className="sb-profile-btn" onClick={() => setManage("profile")} title="My profile">
+                <span className="sb-av" style={{ background: colorFor(session.email) }}>{initials(session.name || session.email)}</span>
+                <span className="sb-profile-label">{session.name || session.email}<em>{isAdmin ? "Admin" : "Member"}</em></span>
+              </button>
+            )}
+            {!session?.memberId && (
+              <select className="sb-me" value={meId} onChange={(e) => setMeId(e.target.value)} title="Who are you?">
+                <option value="">I am…</option>
+                {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            )}
             <button className="sb-btn ghost icon" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle evening mode">{theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}</button>
             <button className="sb-btn ghost icon" onClick={refresh} title="Sync"><RefreshCw size={15} className={loading ? "sb-spin" : ""} /></button>
             {isAdmin && (
@@ -506,6 +513,13 @@ export default function SevaBoardPro() {
       {manage === "festivals" && <FestivalModal festivals={festivals} setFestivals={setFestivals} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "email" && <EmailAccountModal status={msStatus} onDisconnect={disconnectMs} onRefresh={refreshMsStatus} onClose={() => setManage(null)} />}
       {manage === "logins" && <LoginsModal members={members} onClose={() => setManage(null)} toast={toast} />}
+      {manage === "profile" && (
+        <ProfileModal
+          session={session} members={members} isAdmin={isAdmin} toast={toast}
+          onClose={() => setManage(null)}
+          onUpdated={(patch) => { setSession((s) => ({ ...s, ...patch })); if ("memberId" in patch) setMeId(patch.memberId || ""); }}
+        />
+      )}
 
       <div className="sb-toasts">{toasts.map((t) => <div key={t.id} className="sb-toast"><Check size={14} /> {t.msg}</div>)}</div>
       <footer className="sb-foot">Shared across everyone who opens this board · press <kbd>N</kbd> for a new task · भक्त्या सेवते</footer>
@@ -985,6 +999,71 @@ function LoginsModal({ members, onClose, toast }) {
   );
 }
 
+/* ================= my profile ================= */
+function ProfileModal({ session, members, isAdmin, onClose, onUpdated, toast }) {
+  const [name, setName] = useState(session?.name || "");
+  const [memberId, setMemberId] = useState(session?.memberId || "");
+  const [saving, setSaving] = useState(false);
+
+  const [curPw, setCurPw] = useState(""); const [newPw, setNewPw] = useState(""); const [newPw2, setNewPw2] = useState("");
+  const [pwSaving, setPwSaving] = useState(false);
+
+  const saveProfile = async () => {
+    setSaving(true);
+    try {
+      const res = await authCall("/api/auth/me", "PUT", { name: name.trim(), memberId: memberId || null });
+      const data = await res.json();
+      if (res.ok) { toast("Profile updated"); onUpdated({ name: data.name, memberId: data.memberId }); }
+      else toast("Couldn't update profile");
+    } catch (e) { toast("Couldn't update profile"); }
+    setSaving(false);
+  };
+
+  const changePassword = async () => {
+    if (newPw.length < 8) { toast("New password needs 8+ characters"); return; }
+    if (newPw !== newPw2) { toast("New passwords don't match"); return; }
+    setPwSaving(true);
+    try {
+      const res = await authCall("/api/auth/change-password", "PUT", { currentPassword: curPw, newPassword: newPw });
+      const data = await res.json();
+      if (res.ok) { toast("Password changed"); setCurPw(""); setNewPw(""); setNewPw2(""); }
+      else toast(data.error === "invalid_current_password" ? "Current password is wrong" : "Couldn't change password");
+    } catch (e) { toast("Couldn't change password"); }
+    setPwSaving(false);
+  };
+
+  if (!session) return null;
+  return (
+    <Modal onClose={onClose} title="My profile">
+      <div className="sb-profile-head">
+        <span className="sb-av lg" style={{ background: colorFor(session.email) }}>{initials(name || session.email)}</span>
+        <div><strong>{session.email}</strong><span className={`sb-role-badge ${isAdmin ? "admin" : ""}`}>{isAdmin ? "Admin" : "Member"}</span></div>
+      </div>
+
+      <label className="sb-field"><span>Display name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" /></label>
+      <label className="sb-field">
+        <span>I am (devotee identity)</span>
+        <select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
+          <option value="">Not linked</option>
+          {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+      </label>
+      <p className="sb-hint" style={{ marginBottom: 14 }}>Linking to a devotee attributes your comments and filters "Mine" to their tasks automatically.</p>
+      <button className="sb-btn primary" onClick={saveProfile} disabled={saving}><Check size={15} /> {saving ? "Saving…" : "Save profile"}</button>
+
+      <div className="sb-section">
+        <div className="sb-section-head"><span><Settings size={14} /> Change password</span></div>
+        <label className="sb-field"><span>Current password</span><input type="password" value={curPw} onChange={(e) => setCurPw(e.target.value)} /></label>
+        <div className="sb-row2">
+          <label className="sb-field"><span>New password</span><input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} placeholder="8+ characters" /></label>
+          <label className="sb-field"><span>Confirm new password</span><input type="password" value={newPw2} onChange={(e) => setNewPw2(e.target.value)} /></label>
+        </div>
+        <button className="sb-btn primary" onClick={changePassword} disabled={pwSaving || !curPw || !newPw}><Check size={15} /> {pwSaving ? "Saving…" : "Change password"}</button>
+      </div>
+    </Modal>
+  );
+}
+
 /* ================= email account (Outlook connect) ================= */
 function EmailAccountModal({ status, onDisconnect, onRefresh, onClose }) {
   useEffect(() => { onRefresh(); }, []); // pick up latest status each time it's opened
@@ -1121,9 +1200,15 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-brand h1{font-family:var(--display);font-weight:600;font-size:26px;margin:0;}
 .sb-brand p{margin:2px 0 0;font-size:12.5px;opacity:.72;}
 .sb-head-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
-.sb-signedin{font-size:12.5px;color:rgba(247,241,227,.75);font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.sb-signedin em{font-style:normal;opacity:.7;font-weight:500;}
+.sb-profile-btn{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.16);border-radius:20px;padding:4px 12px 4px 4px;color:#F7F1E3;}
+.sb-profile-btn:hover{background:rgba(255,255,255,.14);}
+.sb-profile-label{display:flex;flex-direction:column;align-items:flex-start;line-height:1.2;max-width:130px;}
+.sb-profile-label{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px;}
+.sb-profile-label em{font-style:normal;font-size:10px;font-weight:700;opacity:.65;text-transform:uppercase;letter-spacing:.4px;}
 .sb-role-badge{border:1px solid var(--line);background:var(--line-soft);color:var(--muted);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:700;margin-left:auto;flex-shrink:0;}
+.sb-profile-head{display:flex;align-items:center;gap:13px;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--line-soft);}
+.sb-profile-head strong{display:block;font-size:15px;color:var(--ink);}
+.sb-profile-head .sb-role-badge{margin-left:0;margin-top:4px;display:inline-block;}
 .sb-role-badge.admin{background:color-mix(in srgb,var(--saffron) 18%,transparent);color:var(--saffron);border-color:var(--saffron);}
 .sb-me{background:rgba(255,255,255,.08);color:#F7F1E3;border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:8px 11px;font-size:13px;font-weight:600;outline:none;}
 .sb-me option{color:#20233F;}
