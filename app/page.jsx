@@ -989,6 +989,7 @@ const ERROR_MESSAGES = {
   network_error: "Couldn't reach the server at all — check your internet connection, or the site may be down.",
   login_failed: "Something went wrong — try again.",
   http_404: "The login page isn't found on the server (404) — the latest deployment may not have finished yet. Wait a minute and try again.",
+  db_error: "Couldn't reach the database — check MONGODB_URI in Railway's Variables tab, and that the Mongo service is running.",
   http_500: "The server hit an internal error (500) — usually a missing or wrong environment variable (check MONGODB_URI in Railway). Check your Railway deployment logs.",
   http_502: "The server didn't respond in time (502) — it may still be starting up or redeploying. Wait a minute and try again.",
   http_503: "The server is temporarily unavailable (503) — it may still be starting up or redeploying. Wait a minute and try again.",

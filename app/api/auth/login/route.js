@@ -25,31 +25,36 @@ export async function POST(req) {
   if (!email || !password) return NextResponse.json({ error: "bad_body" }, { status: 400 });
   if (password.length < 8) return NextResponse.json({ error: "password_too_short" }, { status: 400 });
 
-  const total = await countUsers();
+  try {
+    const total = await countUsers();
 
-  if (total === 0) {
-    // Bootstrap: create the very first account. If BOARD_PASSWORD is set, require it as an
-    // extra one-time setup passphrase so a stranger can't grab the first account first.
-    const need = process.env.BOARD_PASSWORD;
-    if (need && body.setupPassword !== need) {
-      return NextResponse.json({ error: "setup_password_required" }, { status: 401 });
+    if (total === 0) {
+      // Bootstrap: create the very first account. If BOARD_PASSWORD is set, require it as an
+      // extra one-time setup passphrase so a stranger can't grab the first account first.
+      const need = process.env.BOARD_PASSWORD;
+      if (need && body.setupPassword !== need) {
+        return NextResponse.json({ error: "setup_password_required" }, { status: 401 });
+      }
+      const name = String(body.name || "").trim() || email.split("@")[0];
+      const passwordHash = await hashPassword(password);
+      await createUser({ email, passwordHash, name, memberId: body.memberId || null });
+      const token = await createSession({ email, name, memberId: body.memberId || null });
+      const res = NextResponse.json({ ok: true, created: true, email, name, memberId: body.memberId || null });
+      setSessionCookie(res, token);
+      return res;
     }
-    const name = String(body.name || "").trim() || email.split("@")[0];
-    const passwordHash = await hashPassword(password);
-    await createUser({ email, passwordHash, name, memberId: body.memberId || null });
-    const token = await createSession({ email, name, memberId: body.memberId || null });
-    const res = NextResponse.json({ ok: true, created: true, email, name, memberId: body.memberId || null });
+
+    const user = await getUserByEmail(email);
+    if (!user) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
+    const ok = await verifyPassword(password, user.passwordHash);
+    if (!ok) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
+
+    const token = await createSession({ email: user.email, name: user.name, memberId: user.memberId });
+    const res = NextResponse.json({ ok: true, email: user.email, name: user.name, memberId: user.memberId });
     setSessionCookie(res, token);
     return res;
+  } catch (e) {
+    console.error("[auth/login]", e.message || e);
+    return NextResponse.json({ error: "db_error", message: String(e.message || e) }, { status: 500 });
   }
-
-  const user = await getUserByEmail(email);
-  if (!user) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
-  const ok = await verifyPassword(password, user.passwordHash);
-  if (!ok) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
-
-  const token = await createSession({ email: user.email, name: user.name, memberId: user.memberId });
-  const res = NextResponse.json({ ok: true, email: user.email, name: user.name, memberId: user.memberId });
-  setSessionCookie(res, token);
-  return res;
 }
