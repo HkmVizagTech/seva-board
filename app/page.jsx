@@ -345,14 +345,14 @@ export default function SevaBoardPro() {
     savePendingRef.current = true;
     saveTimer.current = setTimeout(async () => {
       try {
-        const ok = await saveShared({ sevas, members, festivals, tasks });
+        const ok = await saveShared({ sevas, members, festivals });
         if (!ok) toast("Couldn't save your last change — check your connection, then use Sync");
       } finally {
         savePendingRef.current = false;
         if (deferredRefetchRef.current) { deferredRefetchRef.current = false; loadAll(true); }
       }
     }, 400);
-  }, [sevas, members, festivals, tasks]);
+  }, [sevas, members, festivals]);
   useEffect(() => { if (localLoaded.current) saveLocalPrefs({ meId, theme }); }, [meId, theme]);
 
   const refresh = () => {
@@ -436,28 +436,59 @@ export default function SevaBoardPro() {
   const logEmailSent = (id, member) => setTasks((p) => p.map((x) => (x.id === id ? { ...x, history: [...x.history, { id: uid(), ts: Date.now(), actor: actorName(), type: "email", text: `Email sent to ${member.name}` }] } : x)));
   const notifyEmail = async (task, member) => { const ok = await sendEmail(task, member); if (ok) logEmailSent(task.id, member); };
 
-  /* mutations */
-  const saveTask = (t) => {
+  /* mutations — each hits its own endpoint immediately (atomic on the server), rather
+     than relying on the debounced whole-board save, so task edits can never collide with
+     each other or with a real-time refresh the way a shared whole-array save could. */
+  const saveTask = async (t) => {
     const prev = tasks.find((x) => x.id === t.id);
     const withHistory = { ...t, history: buildHistory(prev, t) };
-    if (prev) setTasks((p) => p.map((x) => (x.id === t.id ? withHistory : x)));
-    else setTasks((p) => [normTask(withHistory), ...p]);
-    // Auto-email newly assigned devotees who have an email on file.
+    let ok;
+
+    if (prev) {
+      setTasks((p) => p.map((x) => (x.id === t.id ? withHistory : x)));
+      const { id, ...fields } = withHistory;
+      try { const res = await authCall(`/api/board/tasks/${id}`, "PATCH", { fields }); ok = res.ok; }
+      catch (e) { ok = false; }
+    } else {
+      const newTask = normTask(withHistory);
+      setTasks((p) => [newTask, ...p]);
+      try { const res = await authCall("/api/board/tasks", "POST", { task: newTask }); ok = res.ok; }
+      catch (e) { ok = false; }
+    }
+
+    toast(ok ? "Task saved" : "Couldn't save — check your connection and try again");
     const addedIds = withHistory.assigneeIds.filter((id) => !(prev?.assigneeIds || []).includes(id));
     addedIds.forEach((id) => { const m = memberById[id]; if (m?.email) notifyEmail(withHistory, m); });
-    setTaskModal(null); toast("Task saved");
+    setTaskModal(null);
   };
-  const delTask = (id) => { setTasks((p) => p.filter((x) => x.id !== id)); toast("Task deleted"); };
-  const setStatus = (id, status) => setTasks((p) => {
-    const t = p.find((x) => x.id === id);
+
+  const delTask = async (id) => {
+    setTasks((p) => p.filter((x) => x.id !== id));
+    try {
+      const res = await authCall(`/api/board/tasks/${id}`, "DELETE");
+      if (!res.ok) toast("Couldn't delete — check your connection and try again");
+    } catch (e) { toast("Couldn't delete — check your connection and try again"); }
+  };
+
+  const setStatus = async (id, status) => {
+    const t = tasks.find((x) => x.id === id);
     const hEntry = { id: uid(), ts: Date.now(), actor: actorName(), type: "status", text: `Status changed to ${STATUSES.find((s) => s.id === status)?.label}` };
-    let next = p.map((x) => (x.id === id ? { ...x, status, completedAt: status === "done" ? Date.now() : null, history: [...x.history, hEntry] } : x));
+    const completedAt = status === "done" ? Date.now() : null;
+    const newHistory = [...(t?.history || []), hEntry];
+
+    setTasks((p) => p.map((x) => (x.id === id ? { ...x, status, completedAt, history: newHistory } : x)));
+    try {
+      const res = await authCall(`/api/board/tasks/${id}`, "PATCH", { fields: { status, completedAt, history: newHistory } });
+      if (!res.ok) toast("Couldn't save status change");
+    } catch (e) { toast("Couldn't save status change"); }
+
     if (t && status === "done" && t.status !== "done" && t.recurrence?.freq) {
       const clone = normTask({ ...t, id: uid(), status: "todo", completedAt: null, due: advance(t.due, t.recurrence), comments: [], history: [{ id: uid(), ts: Date.now(), actor: "System", type: "system", text: "Recurring task auto-scheduled" }], subtasks: t.subtasks.map((s) => ({ ...s, id: uid(), done: false })), createdAt: Date.now() });
-      next = [clone, ...next]; toast("Next occurrence scheduled");
+      setTasks((p) => [clone, ...p]);
+      try { await authCall("/api/board/tasks", "POST", { task: clone }); } catch (e) {}
+      toast("Next occurrence scheduled");
     }
-    return next;
-  });
+  };
   const patchTask = (id, patch) => setTasks((p) => p.map((x) => (x.id === id ? { ...x, ...patch } : x)));
 
   const notifyWhatsApp = (task, member) => {
@@ -474,7 +505,25 @@ export default function SevaBoardPro() {
     toast("CSV exported");
   };
   const exportJSON = () => { dl(JSON.stringify({ sevas, members, festivals, tasks }, null, 2), "seva-board-backup.json", "application/json"); toast("Backup exported"); };
-  const importJSON = (file) => { const r = new FileReader(); r.onload = () => { try { const d = JSON.parse(r.result); if (d.tasks) setTasks(d.tasks.map(normTask)); if (d.sevas) setSevas(d.sevas); if (d.members) setMembers(d.members); if (d.festivals) setFestivals(d.festivals); toast("Backup restored"); } catch (e) { toast("Could not read that file"); } }; r.readAsText(file); };
+  const importJSON = (file) => {
+    const r = new FileReader();
+    r.onload = async () => {
+      try {
+        const d = JSON.parse(r.result);
+        if (d.sevas) setSevas(d.sevas);
+        if (d.members) setMembers(d.members);
+        if (d.festivals) setFestivals(d.festivals);
+        if (d.tasks) {
+          const restoredTasks = d.tasks.map(normTask);
+          setTasks(restoredTasks);
+          const res = await authCall("/api/board/tasks", "PUT", { tasks: restoredTasks });
+          if (!res.ok) { toast("Restored locally, but saving tasks to the server failed — try Sync"); return; }
+        }
+        toast("Backup restored");
+      } catch (e) { toast("Could not read that file"); }
+    };
+    r.readAsText(file);
+  };
 
   /* keyboard */
   const isSuperAdmin = session && session.role === "super_admin";
