@@ -839,7 +839,10 @@ const MiniStat = ({ n, label, c }) => <div className="sb-mini" style={{ "--c": c
 
 /* ================= task modal ================= */
 function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onClose, onDelete, onNotify, onEmail }) {
-  const [f, setF] = useState(() => normTask({ ...task, sevaId: task.sevaId || sevas[0]?.id || "" }));
+  const [f, setF] = useState(() => {
+    const techSeva = sevas.find((s) => /tech/i.test(s.name));
+    return normTask({ ...task, sevaId: task.sevaId || techSeva?.id || sevas[0]?.id || "" });
+  });
   const [cmt, setCmt] = useState("");
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const eligible = members.filter((m) => !f.sevaId || m.sevaIds.includes(f.sevaId));
