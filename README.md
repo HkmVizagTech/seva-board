@@ -231,3 +231,49 @@ a clear "not configured" message instead of failing silently.
 - To trigger automated WhatsApp reminders (via Flaxxa) on recurring/overdue tasks,
   add a small cron route that reads the board and calls the Flaxxa template API — happy to
   add that when you need it.
+
+---
+
+## Installing as a phone app (PWA) + push notifications
+
+The board is a Progressive Web App — it installs to a phone's home screen and runs
+full-screen like a native app, with no app store involved.
+
+### Installing
+
+- **Android (Chrome):** open the site → browser menu (⋮) → **Install app** / **Add to Home screen**.
+- **iPhone/iPad (Safari):** open the site → **Share** → **Add to Home Screen**.
+  On iOS this step is mandatory before notifications will work at all — Apple does not
+  allow web push from a normal Safari tab, only from an installed home-screen app.
+
+### Enabling push notifications
+
+One-time server setup — generate a VAPID key pair:
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+Set these in Railway's Variables and redeploy:
+
+```
+VAPID_PUBLIC_KEY=<publicKey from above>
+VAPID_PRIVATE_KEY=<privateKey from above>
+VAPID_SUBJECT=mailto:tech@hkmvizag.org
+```
+
+Then each person turns notifications on for themselves: **profile (top-right) → My
+profile → Turn on notifications**. They'll get a confirmation notification immediately.
+
+**Important:** a person only receives task notifications if their login is linked to a
+devotee — set that under **My profile → I am (devotee identity)**, or link it for them
+when creating their login in **Manage → Logins**. Without that link, the app has no way
+to know which tasks are theirs.
+
+Notifications fire when a devotee is newly assigned to a task. This runs alongside the
+existing email notification — both are sent, and each is independent, so email still
+works even if push isn't set up (and vice versa).
+
+Subscriptions are per-device: someone who wants notifications on both their phone and
+their laptop turns it on separately in each. Dead subscriptions (app uninstalled,
+permission revoked, browser data cleared) are detected and cleaned up automatically.

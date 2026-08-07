@@ -8,11 +8,15 @@ import {
   CircleCheck, CircleDot, Circle, Settings, RefreshCw, ChevronRight, Sparkles,
   BarChart3, ChevronLeft, Repeat, MessageSquare, ListChecks, GripVertical,
   Moon, Sun, Send, Star, PartyPopper, Upload, Database, User, Filter, Mail,
-  History as HistoryIcon, LogOut,
+  History as HistoryIcon, LogOut, Bell, BellOff, Smartphone,
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
+import {
+  pushSupported, isIOS, isStandalone, registerServiceWorker,
+  getExistingSubscription, subscribeToPush, unsubscribeFromPush,
+} from "../lib/pwaClient";
 
 /* ================= config ================= */
 const SHARED_KEY = "sevaBoard:v2";
@@ -188,6 +192,7 @@ export default function SevaBoardPro() {
   const [taskModal, setTaskModal] = useState(null);
   const [manage, setManage] = useState(null);
   const [msStatus, setMsStatus] = useState({ connected: false, email: "" });
+  const [pushOn, setPushOn] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg) => { const id = uid(); setToasts((p) => [...p, { id, msg }]); setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 2600); };
   const [gate, setGate] = useState(false);
@@ -322,6 +327,13 @@ export default function SevaBoardPro() {
     localLoaded.current = true;
     checkSession();
 
+    // Register the service worker — required both for "Add to Home Screen" to be offered
+    // and for push notifications to be deliverable.
+    registerServiceWorker().then(async () => {
+      const sub = await getExistingSubscription();
+      setPushOn(Boolean(sub));
+    });
+
     // Handle the redirect back from Microsoft's consent screen (?ms_connect=ok|error).
     const params = new URLSearchParams(window.location.search);
     const result = params.get("ms_connect");
@@ -436,6 +448,40 @@ export default function SevaBoardPro() {
   const logEmailSent = (id, member) => setTasks((p) => p.map((x) => (x.id === id ? { ...x, history: [...x.history, { id: uid(), ts: Date.now(), actor: actorName(), type: "email", text: `Email sent to ${member.name}` }] } : x)));
   const notifyEmail = async (task, member) => { const ok = await sendEmail(task, member); if (ok) logEmailSent(task.id, member); };
 
+  /* ---- push notifications ---- */
+  const togglePush = async () => {
+    if (pushOn) {
+      await unsubscribeFromPush();
+      setPushOn(false);
+      toast("Notifications turned off on this device");
+      return;
+    }
+    const res = await subscribeToPush();
+    if (res.ok) { setPushOn(true); return; } // the server sends a confirmation notification
+    const messages = {
+      unsupported: "This browser doesn't support notifications",
+      ios_needs_install: "On iPhone, first use Share → Add to Home Screen, then open the app from there",
+      not_configured: "Push isn't set up on the server yet (VAPID keys missing)",
+      denied: "Notifications are blocked — enable them for this site in your browser settings",
+      dismissed: "Notification permission wasn't granted",
+      server_error: "Couldn't reach the server — try again",
+      subscribe_failed: "Couldn't turn on notifications on this device",
+    };
+    toast(messages[res.reason] || "Couldn't turn on notifications");
+  };
+
+  // Fire-and-forget: notify assigned devotees on their phones. Failures here should never
+  // block or fail the task save itself, so errors are swallowed deliberately.
+  const pushNotifyAssignees = (task, memberIds) => {
+    if (!memberIds?.length) return;
+    authCall("/api/push/notify", "POST", {
+      memberIds,
+      title: task.title,
+      seva: sevaById[task.sevaId]?.name || "",
+      due: task.due ? fmtDate(task.due) : "",
+    }).catch(() => {});
+  };
+
   /* mutations — each hits its own endpoint immediately (atomic on the server), rather
      than relying on the debounced whole-board save, so task edits can never collide with
      each other or with a real-time refresh the way a shared whole-array save could. */
@@ -459,6 +505,7 @@ export default function SevaBoardPro() {
     toast(ok ? "Task saved" : "Couldn't save — check your connection and try again");
     const addedIds = withHistory.assigneeIds.filter((id) => !(prev?.assigneeIds || []).includes(id));
     addedIds.forEach((id) => { const m = memberById[id]; if (m?.email) notifyEmail(withHistory, m); });
+    pushNotifyAssignees(withHistory, addedIds);
     setTaskModal(null);
   };
 
@@ -622,6 +669,7 @@ export default function SevaBoardPro() {
       {manage === "profile" && (
         <ProfileModal
           session={session} members={members} isAdmin={isAdmin} toast={toast}
+          pushOn={pushOn} onTogglePush={togglePush}
           onClose={() => setManage(null)}
           onUpdated={(patch) => { setSession((s) => ({ ...s, ...patch })); if ("memberId" in patch) setMeId(patch.memberId || ""); }}
           onLogout={() => { setManage(null); logout(); }}
@@ -1119,13 +1167,21 @@ function LoginsModal({ members, isSuperAdmin, onClose, toast }) {
 /* ================= my profile ================= */
 const roleLabel = (role) => role === "super_admin" ? "Super Admin" : role === "admin" ? "Admin" : "Member";
 
-function ProfileModal({ session, members, isAdmin, onClose, onUpdated, onLogout, toast }) {
+function ProfileModal({ session, members, isAdmin, onClose, onUpdated, onLogout, toast, pushOn, onTogglePush }) {
   const [name, setName] = useState(session?.name || "");
   const [memberId, setMemberId] = useState(session?.memberId || "");
   const [saving, setSaving] = useState(false);
 
   const [curPw, setCurPw] = useState(""); const [newPw, setNewPw] = useState(""); const [newPw2, setNewPw2] = useState("");
   const [pwSaving, setPwSaving] = useState(false);
+  // Computed in an effect rather than inline: these read browser-only APIs, so reading
+  // them during render would break server-side rendering / hydration.
+  const [iosNeedsInstall, setIosNeedsInstall] = useState(false);
+  const [installed, setInstalled] = useState(true);
+  useEffect(() => {
+    setIosNeedsInstall(isIOS() && !isStandalone());
+    setInstalled(isStandalone());
+  }, []);
 
   const saveProfile = async () => {
     setSaving(true);
@@ -1169,6 +1225,39 @@ function ProfileModal({ session, members, isAdmin, onClose, onUpdated, onLogout,
       </label>
       <p className="sb-hint" style={{ marginBottom: 14 }}>Linking to a devotee attributes your comments and filters "Mine" to their tasks automatically.</p>
       <button className="sb-btn primary" onClick={saveProfile} disabled={saving}><Check size={15} /> {saving ? "Saving…" : "Save profile"}</button>
+
+      <div className="sb-section">
+        <div className="sb-section-head"><span><Bell size={14} /> Notifications on this device</span></div>
+        {!pushSupported() ? (
+          <p className="sb-hint">This browser doesn't support push notifications. Try Chrome on Android, or install this app to your home screen on iPhone.</p>
+        ) : iosNeedsInstall ? (
+          <p className="sb-hint">
+            On iPhone/iPad, notifications only work once this is installed as an app:
+            tap <strong>Share</strong> → <strong>Add to Home Screen</strong>, then open Seva Board from your home screen and turn notifications on there.
+          </p>
+        ) : (
+          <>
+            <p className="sb-hint" style={{ marginBottom: 10 }}>
+              {pushOn
+                ? "You'll get a notification on this device when a seva is assigned to you."
+                : "Turn this on to be notified here whenever a seva is assigned to you."}
+            </p>
+            <button className={`sb-btn ${pushOn ? "ghost" : "primary"}`} onClick={onTogglePush}>
+              {pushOn ? <><BellOff size={15} /> Turn off notifications</> : <><Bell size={15} /> Turn on notifications</>}
+            </button>
+            {!session.memberId && (
+              <p className="sb-hint" style={{ marginTop: 10 }}>
+                Tip: link your profile to a devotee above, otherwise we can't tell which tasks are yours.
+              </p>
+            )}
+          </>
+        )}
+        {!installed && (
+          <p className="sb-hint" style={{ marginTop: 12 }}>
+            <Smartphone size={12} style={{ verticalAlign: "-2px" }} /> Install Seva Board as an app: on Android use your browser menu → <strong>Install app</strong>; on iPhone use <strong>Share</strong> → <strong>Add to Home Screen</strong>.
+          </p>
+        )}
+      </div>
 
       <div className="sb-section">
         <div className="sb-section-head"><span><Settings size={14} /> Change password</span></div>
