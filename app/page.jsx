@@ -8,7 +8,7 @@ import {
   CircleCheck, CircleDot, Circle, Settings, RefreshCw, ChevronRight, Sparkles,
   BarChart3, ChevronLeft, Repeat, MessageSquare, ListChecks, GripVertical,
   Moon, Sun, Send, Star, PartyPopper, Upload, Database, User, Filter, Mail,
-  History as HistoryIcon, LogOut, Bell, BellOff, Smartphone,
+  History as HistoryIcon, LogOut, Bell, BellOff, Smartphone, MoreHorizontal, ListFilter,
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -182,6 +182,7 @@ export default function SevaBoardPro() {
   const localLoaded = useRef(false);
 
   const [view, setView] = useState("board");
+  const [groupBy, setGroupBy] = useState("none"); // none | seva | person — folds old "Seva"/"Person" tabs into a control
   const [q, setQ] = useState("");
   const [fSeva, setFSeva] = useState("all");
   const [fFest, setFFest] = useState("all");
@@ -400,6 +401,8 @@ export default function SevaBoardPro() {
     return [...r].sort(cmp[sort]);
   }, [tasks, q, fSeva, fFest, fAssignee, mine, meId, sort]);
 
+  const activeFilterCount = [fSeva !== "all", fFest !== "all", fAssignee !== "all", mine].filter(Boolean).length;
+
   const stats = useMemo(() => ({
     todo: tasks.filter((t) => t.status === "todo").length,
     doing: tasks.filter((t) => t.status === "doing").length,
@@ -607,25 +610,23 @@ export default function SevaBoardPro() {
                 {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
             )}
-            <button className="sb-btn ghost icon" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle evening mode">{theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}</button>
-            <button className="sb-btn ghost icon" onClick={refresh} title="Sync"><RefreshCw size={15} className={loading ? "sb-spin" : ""} /></button>
-            {isAdmin && (
-              <Dropdown label={<><Database size={15} /> Backup</>}>
-                <button onClick={exportCSV}><Download size={14} /> Export CSV</button>
-                <button onClick={exportJSON}><Download size={14} /> Export JSON</button>
-                <label className="sb-file"><Upload size={14} /> Import JSON<input type="file" accept="application/json" onChange={(e) => e.target.files[0] && importJSON(e.target.files[0])} /></label>
-              </Dropdown>
-            )}
-            {isAdmin && (
-              <Dropdown label={<><Settings size={15} /> Manage</>}>
-                <button onClick={() => setManage("team")}><Users size={14} /> Team</button>
-                <button onClick={() => setManage("sevas")}><Flame size={14} /> Sevas</button>
-                <button onClick={() => setManage("festivals")}><PartyPopper size={14} /> Festivals</button>
-                <button onClick={() => setManage("email")}><Mail size={14} /> Email account</button>
-                <button onClick={() => setManage("logins")}><User size={14} /> Logins</button>
-              </Dropdown>
-            )}
-            <button className="sb-btn ghost icon" onClick={logout} title="Sign out"><LogOut size={15} /></button>
+            <Dropdown label={<MoreHorizontal size={16} />}>
+              <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={14} /> : <Moon size={14} />} Evening mode</button>
+              <button onClick={refresh}><RefreshCw size={14} className={loading ? "sb-spin" : ""} /> Sync</button>
+              {isAdmin && <button onClick={() => setView("analytics")}><BarChart3 size={14} /> Insights</button>}
+              {isAdmin && <div className="sb-dd-divider" />}
+              {isAdmin && <button onClick={() => setManage("team")}><Users size={14} /> Team</button>}
+              {isAdmin && <button onClick={() => setManage("sevas")}><Flame size={14} /> Sevas</button>}
+              {isAdmin && <button onClick={() => setManage("festivals")}><PartyPopper size={14} /> Festivals</button>}
+              {isAdmin && <button onClick={() => setManage("email")}><Mail size={14} /> Email account</button>}
+              {isAdmin && <button onClick={() => setManage("logins")}><User size={14} /> Logins</button>}
+              {isAdmin && <div className="sb-dd-divider" />}
+              {isAdmin && <button onClick={exportCSV}><Download size={14} /> Export CSV</button>}
+              {isAdmin && <button onClick={exportJSON}><Download size={14} /> Export JSON</button>}
+              {isAdmin && <label className="sb-file"><Upload size={14} /> Import JSON<input type="file" accept="application/json" onChange={(e) => e.target.files[0] && importJSON(e.target.files[0])} /></label>}
+              <div className="sb-dd-divider" />
+              <button onClick={logout}><LogOut size={14} /> Sign out</button>
+            </Dropdown>
             {isAdmin && <button className="sb-btn primary" onClick={() => setTaskModal({})}><Plus size={16} /> New task</button>}
           </div>
         </div>
@@ -640,24 +641,38 @@ export default function SevaBoardPro() {
 
       <div className="sb-toolbar">
         <div className="sb-search"><Search size={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks…" /></div>
-        <select value={fSeva} onChange={(e) => setFSeva(e.target.value)} className="sb-select"><option value="all">All sevas</option>{sevas.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
-        <select value={fFest} onChange={(e) => setFFest(e.target.value)} className="sb-select"><option value="all">All festivals</option><option value="none">No festival</option>{festivals.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
-        <select value={fAssignee} onChange={(e) => setFAssignee(e.target.value)} className="sb-select"><option value="all">Anyone</option><option value="none">Unassigned</option>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
-        <button className={`sb-chip-btn ${mine ? "on" : ""}`} onClick={() => setMine((v) => !v)} disabled={!meId} title={meId ? "" : "Pick who you are first"}><Star size={13} /> Mine</button>
-        <select value={sort} onChange={(e) => setSort(e.target.value)} className="sb-select"><option value="due">Sort: Due date</option><option value="priority">Sort: Priority</option><option value="created">Sort: Newest</option></select>
+        <FilterPopover label={<><ListFilter size={15} /> Filters{activeFilterCount > 0 && <span className="sb-filter-badge">{activeFilterCount}</span>}</>}>
+          <div className="sb-filter-panel">
+            <label className="sb-filter-label">Seva</label>
+            <select value={fSeva} onChange={(e) => setFSeva(e.target.value)} className="sb-select full"><option value="all">All sevas</option>{sevas.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+            <label className="sb-filter-label">Festival</label>
+            <select value={fFest} onChange={(e) => setFFest(e.target.value)} className="sb-select full"><option value="all">All festivals</option><option value="none">No festival</option>{festivals.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
+            <label className="sb-filter-label">Assigned to</label>
+            <select value={fAssignee} onChange={(e) => setFAssignee(e.target.value)} className="sb-select full"><option value="all">Anyone</option><option value="none">Unassigned</option>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
+            <label className="sb-filter-label">Sort by</label>
+            <select value={sort} onChange={(e) => setSort(e.target.value)} className="sb-select full"><option value="due">Due date</option><option value="priority">Priority</option><option value="created">Newest</option></select>
+            <button className={`sb-chip-btn full ${mine ? "on" : ""}`} onClick={() => setMine((v) => !v)} disabled={!meId} title={meId ? "" : "Pick who you are first"}><Star size={13} /> My tasks only</button>
+            {activeFilterCount > 0 && <button className="sb-btn ghost sm full" onClick={() => { setFSeva("all"); setFFest("all"); setFAssignee("all"); setMine(false); }}>Clear filters</button>}
+          </div>
+        </FilterPopover>
+        <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)} className="sb-select" title="Group tasks">
+          <option value="none">No grouping</option>
+          <option value="seva">Group by seva</option>
+          <option value="person">Group by person</option>
+        </select>
         <div className="sb-views">
-          {[["board", "Board", LayoutGrid], ["seva", "Seva", ListTree], ["person", "Person", Users], ["calendar", "Calendar", CalendarDays], ["analytics", "Insights", BarChart3]].map(([id, lbl, Ic]) => (
+          {[["board", "Board", LayoutGrid], ["calendar", "Calendar", CalendarDays]].map(([id, lbl, Ic]) => (
             <button key={id} className={`sb-viewbtn ${view === id ? "on" : ""}`} onClick={() => setView(id)}><Ic size={14} /><span className="sb-viewlbl">{lbl}</span></button>
           ))}
         </div>
       </div>
 
       <main className="sb-main">
-        {view === "board" && <BoardView tasks={filtered} {...shared} />}
-        {view === "seva" && <GroupView tasks={filtered} groups={sevas.map((s) => ({ key: s.id, label: s.name, color: s.color, icon: s.icon, match: (t) => t.sevaId === s.id }))} {...shared} />}
-        {view === "person" && <PersonView tasks={filtered} members={members} {...shared} />}
+        {view === "board" && groupBy === "none" && <BoardView tasks={filtered} {...shared} />}
+        {view === "board" && groupBy === "seva" && <GroupView tasks={filtered} groups={sevas.map((s) => ({ key: s.id, label: s.name, color: s.color, icon: s.icon, match: (t) => t.sevaId === s.id }))} {...shared} />}
+        {view === "board" && groupBy === "person" && <PersonView tasks={filtered} members={members} {...shared} />}
         {view === "calendar" && <CalendarView tasks={filtered} {...shared} />}
-        {view === "analytics" && <Analytics tasks={tasks} sevas={sevas} members={members} />}
+        {view === "analytics" && <Analytics tasks={tasks} sevas={sevas} members={members} onBack={() => setView("board")} />}
       </main>
 
       {taskModal && <TaskModal task={taskModal} sevas={sevas} members={members} festivals={festivals} meId={meId} isAdmin={isAdmin} onSave={saveTask} onClose={() => setTaskModal(null)} onDelete={isAdmin && taskModal.id ? () => { delTask(taskModal.id); setTaskModal(null); } : null} onNotify={notifyWhatsApp} onEmail={notifyEmail} />}
@@ -695,6 +710,20 @@ function Dropdown({ label, children }) {
     <div className="sb-dd" ref={ref}>
       <button className="sb-btn ghost" onClick={() => setOpen((v) => !v)}>{label}</button>
       {open && <div className="sb-dd-menu" onClick={() => setOpen(false)}>{children}</div>}
+    </div>
+  );
+}
+
+// Same as Dropdown, but doesn't auto-close on an inner click — needed for a panel with
+// several selects/toggles where closing after the first choice would be annoying.
+function FilterPopover({ label, children }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => { const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }; document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h); }, []);
+  return (
+    <div className="sb-dd" ref={ref}>
+      <button className="sb-btn ghost" onClick={() => setOpen((v) => !v)}>{label}</button>
+      {open && <div className="sb-dd-menu filters">{children}</div>}
     </div>
   );
 }
@@ -846,7 +875,7 @@ function CalendarView({ tasks, sevaById, festById, setTaskModal, ...shared }) {
   );
 }
 
-function Analytics({ tasks, sevas, members }) {
+function Analytics({ tasks, sevas, members, onBack }) {
   const statusData = STATUSES.map((s) => ({ name: s.label, value: tasks.filter((t) => t.status === s.id).length, fill: s.color }));
   const total = tasks.length; const done = tasks.filter((t) => t.status === "done").length;
   const rate = total ? Math.round((done / total) * 100) : 0;
@@ -856,6 +885,7 @@ function Analytics({ tasks, sevas, members }) {
   const weekAhead = tasks.filter((t) => t.status !== "done" && t.due && t.due >= today() && t.due <= addDays(7)).length;
   return (
     <div className="sb-analytics">
+      {onBack && <button className="sb-back-link" onClick={onBack}><ChevronLeft size={15} /> Back to board</button>}
       <div className="sb-a-top">
         <div className="sb-a-donut">
           <ResponsiveContainer width="100%" height={200}>
@@ -887,11 +917,13 @@ const MiniStat = ({ n, label, c }) => <div className="sb-mini" style={{ "--c": c
 
 /* ================= task modal ================= */
 function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onClose, onDelete, onNotify, onEmail }) {
+  const isNew = !task.id;
   const [f, setF] = useState(() => {
     const techSeva = sevas.find((s) => /tech/i.test(s.name));
     return normTask({ ...task, sevaId: task.sevaId || techSeva?.id || sevas[0]?.id || "" });
   });
   const [cmt, setCmt] = useState("");
+  const [showMore, setShowMore] = useState(() => Boolean(task.festivalId || task.recurrence));
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const eligible = members.filter((m) => !f.sevaId || m.sevaIds.includes(f.sevaId));
   const others = members.filter((m) => !eligible.includes(m));
@@ -907,10 +939,7 @@ function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onC
       {!isAdmin && <p className="sb-hint" style={{ marginBottom: 12 }}>You can update status, tick off steps, and add comments. Only admins can edit the task's details.</p>}
       <label className="sb-field"><span>Task</span><input autoFocus={isAdmin} disabled={!isAdmin} value={f.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Prepare Ekadashi prasadam" /></label>
       <label className="sb-field"><span>Details</span><textarea rows={2} disabled={!isAdmin} value={f.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Any instructions…" /></label>
-      <div className="sb-row2">
-        <label className="sb-field"><span>Seva</span><select disabled={!isAdmin} value={f.sevaId} onChange={(e) => set("sevaId", e.target.value)}>{sevas.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
-        <label className="sb-field"><span>Festival</span><select disabled={!isAdmin} value={f.festivalId} onChange={(e) => set("festivalId", e.target.value)}><option value="">None</option>{festivals.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
-      </div>
+      <label className="sb-field"><span>Seva</span><select disabled={!isAdmin} value={f.sevaId} onChange={(e) => set("sevaId", e.target.value)}>{sevas.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
       <div className="sb-field"><span>Assign to</span>
         <div className="sb-assign-pick">
           {eligible.map((m) => <button key={m.id} disabled={!isAdmin} className={`sb-tag ${f.assigneeIds.includes(m.id) ? "on" : ""}`} style={{ "--c": colorFor(m.id) }} onClick={() => toggleAssignee(m.id)}>{m.name}</button>)}
@@ -923,8 +952,17 @@ function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onC
         <label className="sb-field"><span>Status</span><select value={f.status} onChange={(e) => set("status", e.target.value)}>{STATUSES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select></label>
         <label className="sb-field"><span>Due date</span><input type="date" disabled={!isAdmin} value={f.due} onChange={(e) => set("due", e.target.value)} /></label>
       </div>
-      <label className="sb-field"><span><Repeat size={12} /> Repeats</span><select disabled={!isAdmin} value={f.recurrence?.freq || ""} onChange={(e) => set("recurrence", e.target.value ? { freq: e.target.value, interval: 1 } : null)}>{RECUR.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
 
+      {isAdmin && (showMore ? (
+        <div className="sb-row2">
+          <label className="sb-field"><span>Festival</span><select value={f.festivalId} onChange={(e) => set("festivalId", e.target.value)}><option value="">None</option>{festivals.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+          <label className="sb-field"><span><Repeat size={12} /> Repeats</span><select value={f.recurrence?.freq || ""} onChange={(e) => set("recurrence", e.target.value ? { freq: e.target.value, interval: 1 } : null)}>{RECUR.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
+        </div>
+      ) : (
+        <button className="sb-more-toggle" onClick={() => setShowMore(true)}><Plus size={13} /> Festival, repeats…</button>
+      ))}
+
+      {!isNew && (
       <div className="sb-section">
         <div className="sb-section-head"><span><ListChecks size={14} /> Checklist</span>{isAdmin && <button className="sb-mini-add" onClick={addSub}><Plus size={13} /> Add step</button>}</div>
         {f.subtasks.map((s) => (
@@ -936,7 +974,9 @@ function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onC
         ))}
         {!f.subtasks.length && <p className="sb-hint">Break the seva into steps the devotee can tick off.</p>}
       </div>
+      )}
 
+      {!isNew && (
       <div className="sb-section">
         <div className="sb-section-head"><span><MessageSquare size={14} /> Notes & updates</span></div>
         {f.comments.map((c) => <div key={c.id} className="sb-cmt"><strong>{c.author}</strong> <em>{fmtTime(c.ts)}</em><p>{c.text}</p></div>)}
@@ -945,14 +985,16 @@ function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onC
           <button className="sb-btn primary sm" onClick={addComment} disabled={!meId || !cmt.trim()}><Send size={13} /></button>
         </div>
       </div>
+      )}
 
-      {isAdmin && assignedMembers.some((m) => m.phone) && (
+      {!isNew && isAdmin && assignedMembers.some((m) => m.phone) && (
         <div className="sb-notify"><span>Notify on WhatsApp:</span>{assignedMembers.filter((m) => m.phone).map((m) => <button key={m.id} className="sb-wa" onClick={() => onNotify(f, m)}><Send size={12} /> {m.name.split(" ")[0]}</button>)}</div>
       )}
-      {isAdmin && assignedMembers.some((m) => m.email) && (
+      {!isNew && isAdmin && assignedMembers.some((m) => m.email) && (
         <div className="sb-notify email"><span>Email seva assignment:</span>{assignedMembers.filter((m) => m.email).map((m) => <button key={m.id} className="sb-mailbtn" onClick={() => onEmail(f, m)}><Mail size={12} /> {m.name.split(" ")[0]}</button>)}</div>
       )}
 
+      {!isNew && (
       <div className="sb-section">
         <div className="sb-section-head"><span><HistoryIcon size={14} /> Activity & tracking</span></div>
         {f.history.length ? (
@@ -969,6 +1011,7 @@ function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onC
           </div>
         ) : <p className="sb-hint">Every status change, assignment and edit will be tracked here, from creation to completion.</p>}
       </div>
+      )}
 
       <div className="sb-modal-foot">
         {onDelete && <button className="sb-btn danger" onClick={onDelete}><Trash2 size={14} /> Delete</button>}
@@ -1445,6 +1488,16 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-dd-menu button,.sb-file{display:flex;align-items:center;gap:9px;width:100%;background:transparent;border:none;color:var(--ink);padding:9px 11px;border-radius:8px;font-size:13.5px;font-weight:600;text-align:left;cursor:pointer;}
 .sb-dd-menu button:hover,.sb-file:hover{background:var(--line-soft);}
 .sb-file input{display:none;}
+.sb-dd-divider{height:1px;background:var(--line-soft);margin:4px 2px;}
+.sb-dd-menu.filters{padding:12px;min-width:220px;max-height:70vh;overflow-y:auto;}
+.sb-filter-panel{display:flex;flex-direction:column;gap:4px;}
+.sb-filter-label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin:8px 0 2px;}
+.sb-filter-label:first-child{margin-top:0;}
+.sb-select.full,.sb-chip-btn.full{width:100%;max-width:none;justify-content:flex-start;}
+.sb-chip-btn.full{margin-top:10px;}
+.sb-filter-badge{background:var(--saffron);color:#25284A;border-radius:20px;min-width:16px;height:16px;font-size:10.5px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;padding:0 4px;}
+.sb-back-link{display:inline-flex;align-items:center;gap:4px;background:transparent;border:none;color:var(--muted);font-size:13px;font-weight:600;padding:0 0 12px;cursor:pointer;}
+.sb-back-link:hover{color:var(--ink);}
 
 .sb-stats{max-width:1280px;margin:18px auto 0;padding:0 22px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
 .sb-stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:10px;color:var(--tone);}
@@ -1567,6 +1620,8 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
 .sb-section-head>span{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:var(--ink);}
 .sb-mini-add{display:inline-flex;align-items:center;gap:4px;background:var(--line-soft);border:none;color:var(--ink);border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;}
+.sb-more-toggle{display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px dashed var(--line);color:var(--muted);border-radius:8px;padding:8px 12px;font-size:13px;font-weight:600;width:100%;justify-content:center;margin-bottom:14px;}
+.sb-more-toggle:hover{background:var(--line-soft);color:var(--ink);}
 .sb-sub-row{display:flex;align-items:center;gap:8px;margin-bottom:7px;}
 .sb-check{width:20px;height:20px;border-radius:6px;border:1.5px solid var(--line);background:var(--parchment);display:grid;place-items:center;color:#fff;flex-shrink:0;}
 .sb-check.on{background:var(--tulsi);border-color:var(--tulsi);}
