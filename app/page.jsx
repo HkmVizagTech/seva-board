@@ -883,6 +883,28 @@ function Analytics({ tasks, sevas, members, onBack }) {
   const perPerson = [...members.map((m) => ({ name: m.name.split(" ")[0], full: m.name, count: tasks.filter((t) => t.assigneeIds.includes(m.id) && t.status !== "done").length })), { name: "Unassigned", full: "Unassigned", count: tasks.filter((t) => t.assigneeIds.length === 0 && t.status !== "done").length }].filter((d) => d.count > 0).sort((a, b) => b.count - a.count);
   const overdue = tasks.filter(isOverdue).length;
   const weekAhead = tasks.filter((t) => t.status !== "done" && t.due && t.due >= today() && t.due <= addDays(7)).length;
+
+  // Performance/KPIs per devotee: completion rate, on-time rate (of what they finished,
+  // how much was before the due date), average turnaround, and what's overdue right now.
+  const performance = members.map((m) => {
+    const assigned = tasks.filter((t) => t.assigneeIds.includes(m.id));
+    const completed = assigned.filter((t) => t.status === "done");
+    const completedWithDue = completed.filter((t) => t.due && t.completedAt);
+    const onTime = completedWithDue.filter((t) => localISODate(new Date(t.completedAt)) <= t.due);
+    const overdueNow = assigned.filter(isOverdue);
+    const turnarounds = completed.filter((t) => t.completedAt && t.createdAt).map((t) => (t.completedAt - t.createdAt) / 86400000);
+    const avgDays = turnarounds.length ? turnarounds.reduce((a, b) => a + b, 0) / turnarounds.length : null;
+    return {
+      member: m,
+      assigned: assigned.length,
+      completed: completed.length,
+      completionRate: assigned.length ? Math.round((completed.length / assigned.length) * 100) : null,
+      onTimeRate: completedWithDue.length ? Math.round((onTime.length / completedWithDue.length) * 100) : null,
+      avgDays,
+      overdueNow: overdueNow.length,
+    };
+  }).filter((p) => p.assigned > 0).sort((a, b) => b.assigned - a.assigned);
+
   return (
     <div className="sb-analytics">
       {onBack && <button className="sb-back-link" onClick={onBack}><ChevronLeft size={15} /> Back to board</button>}
@@ -909,6 +931,33 @@ function Analytics({ tasks, sevas, members, onBack }) {
           <h4>Workload by devotee</h4>
           {perPerson.length ? <ResponsiveContainer width="100%" height={Math.max(160, perPerson.length * 34)}><BarChart data={perPerson} layout="vertical" margin={{ left: 10, right: 20 }}><XAxis type="number" allowDecimals={false} hide /><YAxis type="category" dataKey="name" width={70} tick={{ fontSize: 12 }} /><Tooltip formatter={(v, n, p) => [v, p.payload.full]} /><Bar dataKey="count" radius={[0, 5, 5, 0]} fill="#E08A1E" /></BarChart></ResponsiveContainer> : <Empty text="No open tasks" />}
         </div>
+      </div>
+
+      <div className="sb-a-card sb-perf-card">
+        <h4>Performance by devotee</h4>
+        {performance.length ? (
+          <div className="sb-perf-list">
+            <div className="sb-perf-row sb-perf-head">
+              <span className="sb-perf-who">Devotee</span>
+              <span className="sb-perf-stats">
+                <em>Done</em><em>Completion</em><em>On time</em><em>Avg days</em><em>Overdue now</em>
+              </span>
+            </div>
+            {performance.map((p) => (
+              <div key={p.member.id} className="sb-perf-row">
+                <div className="sb-perf-who"><span className="sb-av" style={{ background: colorFor(p.member.id) }}>{initials(p.member.name)}</span><span>{p.member.name}</span></div>
+                <div className="sb-perf-stats">
+                  <span className="sb-perf-stat"><strong>{p.completed}/{p.assigned}</strong></span>
+                  <span className="sb-perf-stat"><strong>{p.completionRate ?? "—"}{p.completionRate !== null ? "%" : ""}</strong></span>
+                  <span className={`sb-perf-stat ${p.onTimeRate !== null && p.onTimeRate < 70 ? "warn" : ""}`}><strong>{p.onTimeRate ?? "—"}{p.onTimeRate !== null ? "%" : ""}</strong></span>
+                  <span className="sb-perf-stat"><strong>{p.avgDays !== null ? p.avgDays.toFixed(1) : "—"}</strong></span>
+                  <span className={`sb-perf-stat ${p.overdueNow > 0 ? "warn" : ""}`}><strong>{p.overdueNow}</strong></span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <Empty text="No one has been assigned a task yet" />}
+        <p className="sb-hint" style={{ marginTop: 10 }}>"On time" is the share of their completed tasks finished by the due date. "Avg days" is time from a task being created to marked done.</p>
       </div>
     </div>
   );
@@ -1595,6 +1644,18 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-mini span{font-size:12.5px;color:var(--muted);margin-top:4px;font-weight:600;}
 .sb-a-charts{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
 .sb-a-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;}
+.sb-perf-card{margin-top:16px;}
+.sb-perf-list{display:flex;flex-direction:column;}
+.sb-perf-row{display:grid;grid-template-columns:1.4fr 2fr;gap:10px;align-items:center;padding:10px 4px;border-bottom:1px solid var(--line-soft);}
+.sb-perf-row:last-child{border-bottom:none;}
+.sb-perf-row.sb-perf-head{padding-top:0;padding-bottom:8px;}
+.sb-perf-row.sb-perf-head .sb-perf-who{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;}
+.sb-perf-row.sb-perf-head .sb-perf-stats em{font-style:normal;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;text-align:center;}
+.sb-perf-who{display:flex;align-items:center;gap:9px;font-size:13.5px;font-weight:600;color:var(--ink);}
+.sb-perf-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;}
+.sb-perf-stat{text-align:center;}
+.sb-perf-stat strong{font-size:14px;font-weight:700;color:var(--ink);}
+.sb-perf-stat.warn strong{color:var(--kumkum);}
 .sb-a-card h4{margin:0 0 12px;font-family:var(--display);font-size:16px;font-weight:600;}
 
 .sb-overlay{position:fixed;inset:0;background:rgba(27,29,56,.55);backdrop-filter:blur(2px);display:grid;place-items:center;padding:20px;z-index:50;animation:fade .18s ease;}
@@ -1693,7 +1754,7 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-foot{text-align:center;color:var(--muted);font-size:12px;padding:20px;border-top:1px solid var(--line-soft);font-family:var(--display);font-style:italic;}
 
 @media(max-width:900px){.sb-a-top{grid-template-columns:1fr;}.sb-a-charts{grid-template-columns:1fr;}}
-@media(max-width:820px){.sb-columns{grid-template-columns:1fr;}.sb-stats{grid-template-columns:repeat(2,1fr);}.sb-row3{grid-template-columns:1fr;}.sb-viewlbl{display:none;}.sb-cal-cell{min-height:70px;}}
+@media(max-width:820px){.sb-columns{grid-template-columns:1fr;}.sb-stats{grid-template-columns:repeat(2,1fr);}.sb-row3{grid-template-columns:1fr;}.sb-viewlbl{display:none;}.sb-cal-cell{min-height:70px;}.sb-perf-row{grid-template-columns:1fr;gap:6px;}.sb-perf-row.sb-perf-head{display:none;}.sb-perf-stats{grid-template-columns:repeat(5,1fr);}}
 @media(prefers-reduced-motion:reduce){.sb-root *{animation:none!important;transition:none!important;}}
 `}</style>);
 }
