@@ -156,8 +156,8 @@ async function saveShared(d) {
 function loadLocalPrefs() { try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || "null"); } catch (e) { return null; } }
 function saveLocalPrefs(d) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(d)); } catch (e) {} }
 
-async function msAuthCall(method) {
-  return fetch("/api/auth/microsoft/status", { method, credentials: "same-origin" });
+async function providerAuthCall(provider, method) {
+  return fetch(`/api/auth/${provider}/status`, { method, credentials: "same-origin" });
 }
 async function authCall(path, method, body) {
   return fetch(path, {
@@ -193,6 +193,7 @@ export default function SevaBoardPro() {
   const [taskModal, setTaskModal] = useState(null);
   const [manage, setManage] = useState(null);
   const [msStatus, setMsStatus] = useState({ connected: false, email: "" });
+  const [googleStatus, setGoogleStatus] = useState({ connected: false, email: "" });
   const [pushOn, setPushOn] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg) => { const id = uid(); setToasts((p) => [...p, { id, msg }]); setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 2600); };
@@ -273,7 +274,7 @@ export default function SevaBoardPro() {
         setGate(false);
         setMeId((prev) => prev || data.memberId || "");
         loadAll();
-        refreshMsStatus();
+        refreshMsStatus(); refreshGoogleStatus();
         connectWs();
       } else {
         setSession(false);
@@ -311,7 +312,7 @@ export default function SevaBoardPro() {
     setGate(false);
     setMeId((prev) => prev || data.memberId || "");
     loadAll();
-    refreshMsStatus();
+    refreshMsStatus(); refreshGoogleStatus();
     connectWs();
     return { ok: true };
   };
@@ -351,6 +352,23 @@ export default function SevaBoardPro() {
       const q = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (q ? `?${q}` : ""));
     }
+
+    // Handle the redirect back from Google's consent screen (?google_connect=ok|error).
+    const gParams = new URLSearchParams(window.location.search);
+    const gResult = gParams.get("google_connect");
+    if (gResult === "ok") {
+      const email = gParams.get("email");
+      toast(email ? `Connected to Gmail as ${email}` : "Connected to Gmail");
+      refreshGoogleStatus();
+    } else if (gResult === "error") {
+      const reason = gParams.get("reason");
+      toast(reason === "login_required" ? "Please sign in first, then connect Gmail" : "Couldn't connect Gmail — try again");
+    }
+    if (gResult) {
+      gParams.delete("google_connect"); gParams.delete("email"); gParams.delete("reason");
+      const q = gParams.toString();
+      window.history.replaceState({}, "", window.location.pathname + (q ? `?${q}` : ""));
+    }
   }, []);
   useEffect(() => {
     if (!loaded.current) return;
@@ -373,12 +391,22 @@ export default function SevaBoardPro() {
     toast("Syncing…"); loadAll();
   };
   const refreshMsStatus = async () => {
-    try { const res = await msAuthCall("GET"); if (res.ok) setMsStatus(await res.json()); } catch (e) {}
+    try { const res = await providerAuthCall("microsoft", "GET"); if (res.ok) setMsStatus(await res.json()); } catch (e) {}
   };
   const disconnectMs = async () => {
     try {
-      const res = await msAuthCall("DELETE");
+      const res = await providerAuthCall("microsoft", "DELETE");
       if (res.ok) { setMsStatus({ connected: false }); toast("Disconnected Outlook account"); }
+      else toast("Couldn't disconnect");
+    } catch (e) { toast("Couldn't disconnect"); }
+  };
+  const refreshGoogleStatus = async () => {
+    try { const res = await providerAuthCall("google", "GET"); if (res.ok) setGoogleStatus(await res.json()); } catch (e) {}
+  };
+  const disconnectGoogle = async () => {
+    try {
+      const res = await providerAuthCall("google", "DELETE");
+      if (res.ok) { setGoogleStatus({ connected: false }); toast("Disconnected Gmail account"); }
       else toast("Couldn't disconnect");
     } catch (e) { toast("Couldn't disconnect"); }
   };
@@ -679,7 +707,13 @@ export default function SevaBoardPro() {
       {manage === "team" && <TeamModal members={members} sevas={sevas} setMembers={setMembers} onClose={() => setManage(null)} />}
       {manage === "sevas" && <SevaAdminModal sevas={sevas} setSevas={setSevas} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "festivals" && <FestivalModal festivals={festivals} setFestivals={setFestivals} tasks={tasks} onClose={() => setManage(null)} />}
-      {manage === "email" && <EmailAccountModal status={msStatus} onDisconnect={disconnectMs} onRefresh={refreshMsStatus} onClose={() => setManage(null)} />}
+      {manage === "email" && (
+        <EmailAccountModal
+          msStatus={msStatus} onDisconnectMs={disconnectMs} onRefreshMs={refreshMsStatus}
+          googleStatus={googleStatus} onDisconnectGoogle={disconnectGoogle} onRefreshGoogle={refreshGoogleStatus}
+          onClose={() => setManage(null)}
+        />
+      )}
       {manage === "logins" && <LoginsModal members={members} isSuperAdmin={isSuperAdmin} onClose={() => setManage(null)} toast={toast} />}
       {manage === "profile" && (
         <ProfileModal
@@ -1369,29 +1403,50 @@ function ProfileModal({ session, members, isAdmin, onClose, onUpdated, onLogout,
 }
 
 /* ================= email account (Outlook connect) ================= */
-function EmailAccountModal({ status, onDisconnect, onRefresh, onClose }) {
-  useEffect(() => { onRefresh(); }, []); // pick up latest status each time it's opened
+function EmailAccountModal({ msStatus, onDisconnectMs, onRefreshMs, googleStatus, onDisconnectGoogle, onRefreshGoogle, onClose }) {
+  useEffect(() => { onRefreshMs(); onRefreshGoogle(); }, []); // pick up latest status each time it's opened
+
   return (
-    <Modal onClose={onClose} title="Email account">
-      {status.connected ? (
-        <div className="sb-msaccount connected">
-          <div className="sb-msaccount-row">
-            <span className="sb-av" style={{ background: colorFor(status.email || "x") }}>{initials(status.name || status.email || "?")}</span>
-            <div>
-              <strong>{status.name || status.email}</strong>
-              {status.name && <em>{status.email}</em>}
+    <Modal onClose={onClose} title="Email account" wide>
+      <p className="sb-hint" style={{ marginBottom: 14 }}>Connect either (or both) — whichever is connected sends your seva assignment emails. Gmail is checked first if both are connected.</p>
+
+      <div className="sb-provider-block">
+        <h4 className="sb-provider-title"><Mail size={15} /> Gmail</h4>
+        {googleStatus.connected ? (
+          <div className="sb-msaccount connected">
+            <div className="sb-msaccount-row">
+              <span className="sb-av" style={{ background: colorFor(googleStatus.email || "g") }}>{initials(googleStatus.name || googleStatus.email || "?")}</span>
+              <div><strong>{googleStatus.name || googleStatus.email}</strong>{googleStatus.name && <em>{googleStatus.email}</em>}</div>
             </div>
+            <button className="sb-btn danger" onClick={onDisconnectGoogle}><X size={14} /> Disconnect Gmail</button>
           </div>
-          <p className="sb-hint">Assignment emails are sent through this Outlook account. Disconnecting stops automatic sending until a new account is connected (or the app falls back to another configured provider).</p>
-          <button className="sb-btn danger" onClick={onDisconnect}><X size={14} /> Disconnect</button>
-        </div>
-      ) : (
-        <div className="sb-msaccount">
-          <p className="sb-hint">No Outlook account connected yet. Connect one so seva assignment emails are sent through it automatically.</p>
-          <a className="sb-btn primary" href="/api/auth/microsoft" style={{ textDecoration: "none" }}><Mail size={15} /> Connect Outlook</a>
-          <p className="sb-hint" style={{ marginTop: 10 }}>This opens Microsoft's own sign-in page — the board never sees your password.</p>
-        </div>
-      )}
+        ) : (
+          <div className="sb-msaccount">
+            <p className="sb-hint">No Gmail account connected yet.</p>
+            <a className="sb-btn primary" href="/api/auth/google" style={{ textDecoration: "none" }}><Mail size={15} /> Connect Gmail</a>
+          </div>
+        )}
+      </div>
+
+      <div className="sb-provider-block">
+        <h4 className="sb-provider-title"><Mail size={15} /> Outlook</h4>
+        {msStatus.connected ? (
+          <div className="sb-msaccount connected">
+            <div className="sb-msaccount-row">
+              <span className="sb-av" style={{ background: colorFor(msStatus.email || "x") }}>{initials(msStatus.name || msStatus.email || "?")}</span>
+              <div><strong>{msStatus.name || msStatus.email}</strong>{msStatus.name && <em>{msStatus.email}</em>}</div>
+            </div>
+            <button className="sb-btn danger" onClick={onDisconnectMs}><X size={14} /> Disconnect Outlook</button>
+          </div>
+        ) : (
+          <div className="sb-msaccount">
+            <p className="sb-hint">No Outlook account connected yet.</p>
+            <a className="sb-btn primary" href="/api/auth/microsoft" style={{ textDecoration: "none" }}><Mail size={15} /> Connect Outlook</a>
+          </div>
+        )}
+      </div>
+
+      <p className="sb-hint">Either opens the provider's own sign-in page — the board never sees your password. Disconnecting stops automatic sending through that account (the app falls back to another configured provider if one exists).</p>
     </Modal>
   );
 }
@@ -1689,6 +1744,8 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-sub-row input{flex:1;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13.5px;background:var(--parchment);color:var(--ink);outline:none;}
 .sb-sub-row input.done{text-decoration:line-through;color:var(--muted);}
 .sb-hint{font-size:12.5px;color:var(--muted);font-style:italic;margin:0;}
+.sb-provider-block{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px;}
+.sb-provider-title{display:flex;align-items:center;gap:7px;margin:0 0 10px;font-family:var(--display);font-size:15px;font-weight:600;color:var(--ink);}
 .sb-msaccount{display:flex;flex-direction:column;gap:12px;}
 .sb-msaccount-row{display:flex;align-items:center;gap:11px;}
 .sb-msaccount-row>div{display:flex;flex-direction:column;line-height:1.3;}

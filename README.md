@@ -132,11 +132,45 @@ seva, due date, priority, and notes. Every send is logged in that task's activit
 and you can resend manually any time from the **Email seva assignment** button inside a
 task.
 
-### Option 1 — Google Workspace (recommended, fixed shared sender)
+### Option 1 — Connect Gmail (recommended, personal sign-in)
 
-The simplest setup: a fixed `noreply@` mailbox that sends every assignment email,
-using Gmail's SMTP relay with an app password. No Google Cloud project, no OAuth
-consent screen — just a mailbox and a password.
+Each admin signs into their own Google account and approves sending mail as themselves —
+no shared mailbox, no app password to manage. This is checked first if both this and
+Option 2 are set up.
+
+**One-time Google Cloud setup:**
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com), create a project
+   (or use an existing one).
+2. **APIs & Services → Library** → search **Gmail API** → **Enable**.
+3. **APIs & Services → OAuth consent screen** → choose **External** (or **Internal** if
+   your Workspace supports it) → fill in the app name ("Seva Board") and your email →
+   save through the steps. Under **Scopes**, add `.../auth/gmail.send`. While the app is
+   in "Testing" mode, add each admin's Google account under **Test users** — otherwise
+   Google will block their sign-in attempt.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID** → Application
+   type **Web application**. Under **Authorized redirect URIs**, add:
+   `{APP_BASE_URL}/api/auth/google/callback` — e.g.
+   `https://seva-board.up.railway.app/api/auth/google/callback`.
+5. Copy the **Client ID** and **Client secret** it generates.
+6. Set in Railway:
+   ```
+   GOOGLE_CLIENT_ID=<client id>
+   GOOGLE_CLIENT_SECRET=<client secret>
+   APP_BASE_URL=<your deployed URL, no trailing slash>
+   ```
+7. Redeploy, then **Manage → Email account → Connect Gmail**.
+
+If you ever see "no_refresh_token" when connecting, it means Google already had a grant
+for this app without offline access — go to
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions), remove
+"Seva Board", and reconnect.
+
+### Option 2 — Google Workspace (fixed shared sender)
+
+The simplest setup if you'd rather not deal with Google Cloud at all: a fixed `noreply@`
+mailbox that sends every assignment email, using Gmail's SMTP relay with an app password.
+Only used if no personal Gmail account is connected via Option 1.
 
 1. In the **Google Workspace Admin console** (admin.google.com), create a new user —
    e.g. `noreply@harekrishnavizag.org`. A real mailbox, not just an alias.
@@ -156,7 +190,8 @@ consent screen — just a mailbox and a password.
 5. Redeploy. No further setup — assignment emails now send automatically from this
    address for everyone using the board.
 
-### Option 2 — Connect Outlook (Microsoft 365, sign-in based)
+### Option 3 — Connect Outlook (Microsoft 365, sign-in based)
+
 
 Only relevant if you're on a Microsoft 365 tenant instead of / alongside Google
 Workspace. **Manage → Email account → Connect Outlook** lets a person sign into their
@@ -187,14 +222,14 @@ The connected account (email, display name, and refresh token) is stored in Mong
 tokens are refreshed automatically and never shown in the UI. **Manage → Email account**
 shows who's connected and has a **Disconnect** button.
 
-### Option 3 — Microsoft app-only, fixed sender (advanced, no sign-in)
+### Option 4 — Microsoft app-only, fixed sender (advanced, no sign-in)
 
 Sends as one fixed mailbox with no login step, but needs a Global Admin to grant
 tenant-wide consent up front, and technically that consent lets the app send as *any*
 mailbox in your tenant unless you restrict it (see below). Better suited to a shared
 service mailbox than a personal inbox.
 
-Same app registration as option 2, plus:
+Same app registration as option 3, plus:
 
 1. **API permissions → Add a permission → Microsoft Graph → Application permissions**
    → add `Mail.Send`.
@@ -217,11 +252,12 @@ Test-ApplicationAccessPolicy -AppId <MS_CLIENT_ID> -Identity mukunda@hkmvizag.or
 
 ### Provider order
 
-If `GMAIL_USER`/`GMAIL_APP_PASSWORD` (option 1) are set, Google Workspace is always used
-first. Otherwise, an Outlook account connected via option 2 is used. Otherwise, if
-`MS_SENDER_EMAIL` (option 3) is set, that's used. Otherwise, if `RESEND_API_KEY` is set,
-that's the last-resort fallback. If none of these are configured, the email buttons show
-a clear "not configured" message instead of failing silently.
+If a Gmail account is connected via option 1, it's always used first. Otherwise, if
+`GMAIL_USER`/`GMAIL_APP_PASSWORD` (option 2) are set, that's used. Otherwise, an Outlook
+account connected via option 3 is used. Otherwise, if `MS_SENDER_EMAIL` (option 4) is
+set, that's used. Otherwise, if `RESEND_API_KEY` is set, that's the last-resort fallback.
+If none of these are configured, the email buttons show a clear "not configured" message
+instead of failing silently.
 
 ## Notes
 
