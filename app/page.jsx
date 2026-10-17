@@ -205,12 +205,20 @@ export default function SevaBoardPro() {
   const wsRetryRef = useRef(0);
   const savePendingRef = useRef(false); // a debounced save is scheduled or currently in flight
   const deferredRefetchRef = useRef(false); // a broadcast arrived while we were busy saving
+  const snapshotRef = useRef(""); // JSON of sevas/team/festivals as the server last had them
 
   /* load */
   const applyBoard = (d) => {
-    setSevas((d && d.sevas) || DEFAULT_SEVAS);
-    setMembers((d && d.members) || DEFAULT_MEMBERS);
-    setFestivals((d && d.festivals) || DEFAULT_FESTIVALS);
+    const nextSevas = (d && d.sevas) || DEFAULT_SEVAS;
+    const nextMembers = (d && d.members) || DEFAULT_MEMBERS;
+    const nextFestivals = (d && d.festivals) || DEFAULT_FESTIVALS;
+    // Remember what the server has, so the auto-save effect can tell "state was just refreshed
+    // from the server" apart from "the user changed something". Without this, every refresh
+    // looked like an edit, got saved back, triggered another refresh, and so on in a loop.
+    snapshotRef.current = JSON.stringify({ sevas: nextSevas, members: nextMembers, festivals: nextFestivals });
+    setSevas(nextSevas);
+    setMembers(nextMembers);
+    setFestivals(nextFestivals);
     setTasks(((d && d.tasks) || DEFAULT_TASKS).map(normTask));
   };
   const loadAll = async (silent) => {
@@ -225,12 +233,17 @@ export default function SevaBoardPro() {
       return;
     }
     setGate(false);
+    if (r.data && savePendingRef.current) {
+      // Unsaved local edits are scheduled or in flight — applying server data now would wipe
+      // them out. Refresh again as soon as they've been saved.
+      deferredRefetchRef.current = true; setLoading(false); return;
+    }
     if (r.data) applyBoard(r.data);
     else if (!loaded.current) {
       // Only seed the example board on a genuinely confirmed first-ever run (the server
       // explicitly returned "no board document exists", not an error) — never on a retry.
       const seed = { sevas: DEFAULT_SEVAS, members: DEFAULT_MEMBERS, festivals: DEFAULT_FESTIVALS, tasks: DEFAULT_TASKS.map(normTask) };
-      applyBoard(seed); await saveShared(seed);
+      applyBoard(seed); await saveShared(seed); await authCall("/api/board/tasks", "PUT", { tasks: seed.tasks }).catch(() => {});
     }
     loaded.current = true; setLoading(false);
   };
@@ -372,17 +385,42 @@ export default function SevaBoardPro() {
   }, []);
   useEffect(() => {
     if (!loaded.current) return;
+    const current = JSON.stringify({ sevas, members, festivals });
     clearTimeout(saveTimer.current);
-    savePendingRef.current = true;
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const ok = await saveShared({ sevas, members, festivals });
-        if (!ok) toast("Couldn't save your last change — check your connection, then use Sync");
-      } finally {
+    saveTimer.current = null;
+
+    if (current === snapshotRef.current) {
+      // Identical to what the server has (state was just refreshed from it, or an edit was
+      // undone) — nothing to save, and saving would only trigger another refresh.
+      if (savePendingRef.current) {
         savePendingRef.current = false;
         if (deferredRefetchRef.current) { deferredRefetchRef.current = false; loadAll(true); }
       }
-    }, 400);
+      return;
+    }
+
+    savePendingRef.current = true;
+    let warned = false;
+    const attempt = async () => {
+      saveTimer.current = null;
+      let ok = false;
+      try {
+        ok = await saveShared({ sevas, members, festivals });
+        if (ok) snapshotRef.current = current;
+      } finally {
+        if (!saveTimer.current) { // nothing newer is waiting
+          if (ok) {
+            savePendingRef.current = false;
+            if (deferredRefetchRef.current) { deferredRefetchRef.current = false; loadAll(true); }
+          } else {
+            // Keep the edit safe and keep trying, rather than dropping it or overwriting it.
+            if (!warned) { warned = true; toast("Couldn't save your last change — retrying…"); }
+            saveTimer.current = setTimeout(attempt, 5000);
+          }
+        }
+      }
+    };
+    saveTimer.current = setTimeout(attempt, 400);
   }, [sevas, members, festivals]);
   useEffect(() => { if (localLoaded.current) saveLocalPrefs({ meId, theme }); }, [meId, theme]);
 
@@ -704,7 +742,7 @@ export default function SevaBoardPro() {
       </main>
 
       {taskModal && <TaskModal task={taskModal} sevas={sevas} members={members} festivals={festivals} meId={meId} isAdmin={isAdmin} onSave={saveTask} onClose={() => setTaskModal(null)} onDelete={isAdmin && taskModal.id ? () => { delTask(taskModal.id); setTaskModal(null); } : null} onNotify={notifyWhatsApp} onEmail={notifyEmail} />}
-      {manage === "team" && <TeamModal members={members} sevas={sevas} setMembers={setMembers} onClose={() => setManage(null)} />}
+      {manage === "team" && <TeamModal members={members} sevas={sevas} setMembers={setMembers} toast={toast} onClose={() => setManage(null)} />}
       {manage === "sevas" && <SevaAdminModal sevas={sevas} setSevas={setSevas} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "festivals" && <FestivalModal festivals={festivals} setFestivals={setFestivals} tasks={tasks} onClose={() => setManage(null)} />}
       {manage === "email" && (
@@ -1107,24 +1145,84 @@ function TaskModal({ task, sevas, members, festivals, meId, isAdmin, onSave, onC
 }
 
 /* ================= team modal ================= */
-function TeamModal({ members, sevas, setMembers, onClose }) {
+function generatePassword() {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const arr = new Uint32Array(10);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(arr);
+  else for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 4294967295);
+  let out = "";
+  for (let i = 0; i < arr.length; i++) out += chars[arr[i] % chars.length];
+  return out;
+}
+
+function TeamModal({ members, sevas, setMembers, toast, onClose }) {
   const [name, setName] = useState(""); const [role, setRole] = useState(""); const [phone, setPhone] = useState(""); const [email, setEmail] = useState(""); const [sel, setSel] = useState([]);
+  const [withLogin, setWithLogin] = useState(false); const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const nameRef = useRef(null);
   const toggle = (id) => setSel((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
-  const add = () => { if (!name.trim()) return; setMembers((p) => [...p, { id: uid(), name: name.trim(), role: role.trim() || "Sevak", phone: phone.trim(), email: email.trim(), sevaIds: sel }]); setName(""); setRole(""); setPhone(""); setEmail(""); setSel([]); };
+
+  const add = async () => {
+    if (busy) return;
+    if (!name.trim()) { toast("Type the devotee's name first"); nameRef.current && nameRef.current.focus(); return; }
+    if (withLogin) {
+      if (!email.trim()) { toast("Add their email — it's what they'll sign in with"); return; }
+      if (password.length < 8) { toast("The login password needs 8+ characters"); return; }
+    }
+    setBusy(true);
+    const member = { id: uid(), name: name.trim(), role: role.trim() || "Sevak", phone: phone.trim(), email: email.trim(), sevaIds: sel };
+    setMembers((p) => [member, ...p]); // newest first, so it's visible right under the form
+    let msg = `Added ${member.name}`;
+    if (withLogin) {
+      const loginFailed = `Added ${member.name}, but the login couldn't be created — add it under Logins`;
+      try {
+        const res = await authCall("/api/auth/users", "POST", { email: member.email, password, name: member.name, memberId: member.id, role: "member" });
+        if (res.ok) msg = `Added ${member.name} with a login`;
+        else if (res.status === 409) msg = `Added ${member.name}, but that email already has a login`;
+        else msg = loginFailed;
+      } catch (e) { msg = loginFailed; }
+    }
+    toast(msg);
+    setName(""); setRole(""); setPhone(""); setEmail(""); setSel([]); setWithLogin(false); setPassword("");
+    setBusy(false);
+    nameRef.current && nameRef.current.focus();
+  };
+  const onEnter = (e) => { if (e.key === "Enter") add(); };
+
   const remove = (id) => setMembers((p) => p.filter((m) => m.id !== id));
   const setPh = (id, v) => setMembers((p) => p.map((m) => (m.id === id ? { ...m, phone: v } : m)));
   const setEm = (id, v) => setMembers((p) => p.map((m) => (m.id === id ? { ...m, email: v } : m)));
   const setMS = (mid, sid) => setMembers((p) => p.map((m) => (m.id === mid ? { ...m, sevaIds: m.sevaIds.includes(sid) ? m.sevaIds.filter((x) => x !== sid) : [...m.sevaIds, sid] } : m)));
+
   return (
-    <Modal onClose={onClose} title="Team & seva assignments" wide>
-      <div className="sb-add-member">
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Devotee name" />
-        <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role" />
-        <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="WhatsApp (91…)" />
-        <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" />
-        <button className="sb-btn primary" onClick={add}><Plus size={15} /> Add</button>
+    <Modal onClose={onClose} title="Team" wide>
+      <div className="sb-add-card">
+        <h4 className="sb-add-title"><Plus size={14} /> Add team member</h4>
+        <div className="sb-add-member">
+          <input ref={nameRef} autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={onEnter} placeholder="Devotee name *" />
+          <input value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={onEnter} placeholder="Role (e.g. Sevak)" />
+        </div>
+        <div className="sb-add-member">
+          <input value={phone} onChange={(e) => setPhone(e.target.value)} onKeyDown={onEnter} placeholder="WhatsApp (91…)" />
+          <input value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={onEnter} placeholder="Email" type="email" />
+        </div>
+        <label className="sb-filter-label">Sevas they help with</label>
+        <div className="sb-seva-picker">{sevas.map((s) => <button key={s.id} type="button" className={`sb-tag ${sel.includes(s.id) ? "on" : ""}`} style={{ "--c": s.color }} onClick={() => toggle(s.id)}>{s.name}</button>)}</div>
+        <p className="sb-hint" style={{ marginBottom: 10 }}>Pick at least one so they show up first when you assign a task in that seva.</p>
+        <label className="sb-check-row"><input type="checkbox" checked={withLogin} onChange={(e) => setWithLogin(e.target.checked)} /> Also give them a login to this board</label>
+        {withLogin && (
+          <>
+            <div className="sb-add-member">
+              <input value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={onEnter} placeholder="Password (8+ characters)" />
+              <button type="button" className="sb-btn ghost sm" onClick={() => setPassword(generatePassword())}>Generate</button>
+            </div>
+            <p className="sb-hint" style={{ marginBottom: 10 }}>They sign in with the email above and start as a Member (can update their own tasks). Share the password with them directly.</p>
+          </>
+        )}
+        <button className="sb-btn primary" onClick={add} disabled={busy}><Plus size={15} /> {busy ? "Adding…" : "Add to team"}</button>
       </div>
-      <div className="sb-seva-picker">{sevas.map((s) => <button key={s.id} className={`sb-tag ${sel.includes(s.id) ? "on" : ""}`} style={{ "--c": s.color }} onClick={() => toggle(s.id)}>{s.name}</button>)}</div>
+
+      <h4 className="sb-list-title">Team ({members.length})</h4>
       <div className="sb-member-list">
         {members.map((m) => (
           <div key={m.id} className="sb-member">
@@ -1133,7 +1231,7 @@ function TeamModal({ members, sevas, setMembers, onClose }) {
               <div><strong>{m.name}</strong><em>{m.role}</em></div>
               <input className="sb-phone" value={m.phone || ""} onChange={(e) => setPh(m.id, e.target.value)} placeholder="WhatsApp no." />
               <input className="sb-phone" value={m.email || ""} onChange={(e) => setEm(m.id, e.target.value)} placeholder="Email" type="email" />
-              <button className="sb-icon-btn" onClick={() => remove(m.id)}><Trash2 size={14} /></button>
+              <button className="sb-icon-btn" onClick={() => remove(m.id)} title="Remove from team"><Trash2 size={14} /></button>
             </div>
             <div className="sb-member-sevas">{sevas.map((s) => <button key={s.id} className={`sb-tag sm ${m.sevaIds.includes(s.id) ? "on" : ""}`} style={{ "--c": s.color }} onClick={() => setMS(m.id, s.id)}>{s.name}</button>)}</div>
           </div>
@@ -1782,6 +1880,10 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-color{width:44px;min-width:44px;padding:3px;height:38px;border:1px solid var(--line);border-radius:9px;background:var(--parchment);cursor:pointer;flex:0!important;}
 .sb-icon-sel{max-width:110px;flex:0!important;border:1px solid var(--line);border-radius:9px;padding:9px;background:var(--parchment);color:var(--ink);}
 .sb-seva-picker{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;}
+.sb-add-card{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:18px;background:var(--parchment);}
+.sb-add-title,.sb-list-title{display:flex;align-items:center;gap:6px;margin:0 0 10px;font-family:var(--display);font-size:15px;font-weight:600;color:var(--ink);}
+.sb-check-row{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--ink);margin:4px 0 10px;cursor:pointer;}
+.sb-check-row input{width:16px;height:16px;accent-color:var(--saffron);}
 .sb-member-list{display:flex;flex-direction:column;gap:14px;}
 .sb-member{border:1px solid var(--line);border-radius:12px;padding:12px;}
 .sb-member-id{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
