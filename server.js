@@ -30,12 +30,16 @@ function allowedOrigin(origin, hostHeader) {
 
 app.prepare().then(() => {
   const server = createServer((req, res) => {
+    // This app never uses Next's image optimizer, and recent Next.js advisories concern it —
+    // so refuse the endpoint outright rather than leave it exposed.
+    if (req.url && req.url.startsWith("/_next/image")) { res.statusCode = 404; return res.end("Not found"); }
     handle(req, res, parse(req.url, true));
   });
 
   const wss = new WebSocketServer({
     server,
     path: "/ws",
+    maxPayload: 1024, // clients never send us anything meaningful; refuse large frames
     verifyClient: (info) => allowedOrigin(info.origin, info.req.headers.host),
   });
   wss.on("connection", (ws) => {

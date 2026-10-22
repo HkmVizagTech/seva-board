@@ -2,6 +2,7 @@
 module.exports = {
   reactStrictMode: false,
   poweredByHeader: false,
+  images: { unoptimized: true }, // image optimizer unused (and disabled in server.js)
   async headers() {
     return [{
       source: "/(.*)",
