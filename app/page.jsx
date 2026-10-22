@@ -170,10 +170,13 @@ async function authCall(path, method, body) {
 
 /* ============================================================= */
 export default function SevaBoardPro() {
-  const [sevas, setSevas] = useState(DEFAULT_SEVAS);
-  const [members, setMembers] = useState(DEFAULT_MEMBERS);
-  const [festivals, setFestivals] = useState(DEFAULT_FESTIVALS);
-  const [tasks, setTasks] = useState(DEFAULT_TASKS.map(normTask));
+  // Start empty and show a loading screen until the real board arrives, so the built-in
+  // example data (used only to seed a brand-new install) is never shown to real users.
+  const [sevas, setSevas] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [festivals, setFestivals] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [bootState, setBootState] = useState("loading"); // loading | ready | error
   const [loading, setLoading] = useState(true);
   const loaded = useRef(false);
 
@@ -229,6 +232,7 @@ export default function SevaBoardPro() {
       // Genuine failure — never seed defaults or touch existing local state here, since
       // doing so would risk overwriting real data with placeholders on the next save.
       setLoading(false);
+      if (!loaded.current) setBootState("error");
       if (loaded.current) toast(r.networkError ? "Couldn't reach the server — check your connection" : `Couldn't load the board (${r.status || "error"}) — try Sync again shortly`);
       return;
     }
@@ -245,7 +249,7 @@ export default function SevaBoardPro() {
       const seed = { sevas: DEFAULT_SEVAS, members: DEFAULT_MEMBERS, festivals: DEFAULT_FESTIVALS, tasks: DEFAULT_TASKS.map(normTask) };
       applyBoard(seed); await saveShared(seed); await authCall("/api/board/tasks", "PUT", { tasks: seed.tasks }).catch(() => {});
     }
-    loaded.current = true; setLoading(false);
+    loaded.current = true; setBootState("ready"); setLoading(false);
   };
 
   const connectWs = () => {
@@ -333,6 +337,8 @@ export default function SevaBoardPro() {
   const logout = async () => {
     try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch (e) {}
     if (wsRef.current) { try { wsRef.current.onclose = null; wsRef.current.close(); } catch (e) {} wsRef.current = null; }
+    clearTimeout(saveTimer.current); saveTimer.current = null; savePendingRef.current = false; deferredRefetchRef.current = false;
+    loaded.current = false; setBootState("loading");
     setSession(false); setGate(true); setMeId(""); toast("Signed out");
   };
 
@@ -605,7 +611,6 @@ export default function SevaBoardPro() {
       toast("Next occurrence scheduled");
     }
   };
-  const patchTask = (id, patch) => setTasks((p) => p.map((x) => (x.id === id ? { ...x, ...patch } : x)));
 
   const notifyWhatsApp = (task, member) => {
     if (!member?.phone) { toast("Add a phone number for this devotee first"); return; }
@@ -649,9 +654,10 @@ export default function SevaBoardPro() {
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
   }, [taskModal, manage, isAdmin]);
 
-  const shared = { sevaById, memberById, festById, members, setStatus, setTaskModal, delTask, patchTask, meId, notifyWhatsApp, notifyEmail, isAdmin };
+  const shared = { sevaById, memberById, festById, members, setStatus, setTaskModal, delTask, meId, notifyWhatsApp, notifyEmail, isAdmin };
 
   if (gate) return <LoginGate theme={theme} needsSetup={needsSetup} onLogin={login} />;
+  if (bootState !== "ready") return <BootScreen theme={theme} state={bootState} onRetry={() => { setBootState("loading"); loadAll(); }} />;
 
   return (
     <div className={`sb-root ${theme === "dark" ? "dark" : ""}`}>
@@ -690,6 +696,7 @@ export default function SevaBoardPro() {
               {isAdmin && <button onClick={exportCSV}><Download size={14} /> Export CSV</button>}
               {isAdmin && <button onClick={exportJSON}><Download size={14} /> Export JSON</button>}
               {isAdmin && <label className="sb-file"><Upload size={14} /> Import JSON<input type="file" accept="application/json" onChange={(e) => e.target.files[0] && importJSON(e.target.files[0])} /></label>}
+              {isSuperAdmin && <button onClick={() => setManage("backups")}><Database size={14} /> Backups &amp; restore</button>}
               <div className="sb-dd-divider" />
               <button onClick={logout}><LogOut size={14} /> Sign out</button>
             </Dropdown>
@@ -734,11 +741,17 @@ export default function SevaBoardPro() {
       </div>
 
       <main className="sb-main">
+        {tasks.length === 0 && view !== "analytics" ? (
+          <EmptyBoard isAdmin={isAdmin} onNew={() => setTaskModal({})} />
+        ) : (
+        <>
         {view === "board" && groupBy === "none" && <BoardView tasks={filtered} {...shared} />}
         {view === "board" && groupBy === "seva" && <GroupView tasks={filtered} groups={sevas.map((s) => ({ key: s.id, label: s.name, color: s.color, icon: s.icon, match: (t) => t.sevaId === s.id }))} {...shared} />}
         {view === "board" && groupBy === "person" && <PersonView tasks={filtered} members={members} {...shared} />}
         {view === "calendar" && <CalendarView tasks={filtered} {...shared} />}
         {view === "analytics" && <Analytics tasks={tasks} sevas={sevas} members={members} onBack={() => setView("board")} />}
+        </>
+        )}
       </main>
 
       {taskModal && <TaskModal task={taskModal} sevas={sevas} members={members} festivals={festivals} meId={meId} isAdmin={isAdmin} onSave={saveTask} onClose={() => setTaskModal(null)} onDelete={isAdmin && taskModal.id ? () => { delTask(taskModal.id); setTaskModal(null); } : null} onNotify={notifyWhatsApp} onEmail={notifyEmail} />}
@@ -753,6 +766,7 @@ export default function SevaBoardPro() {
         />
       )}
       {manage === "logins" && <LoginsModal members={members} isSuperAdmin={isSuperAdmin} onClose={() => setManage(null)} toast={toast} />}
+      {manage === "backups" && isSuperAdmin && <BackupsModal toast={toast} onClose={() => setManage(null)} onRestored={() => loadAll()} />}
       {manage === "profile" && (
         <ProfileModal
           session={session} members={members} isAdmin={isAdmin} toast={toast}
@@ -1565,6 +1579,8 @@ function Modal({ children, title, onClose, wide }) {
 /* ================= login gate ================= */
 const ERROR_MESSAGES = {
   invalid_credentials: "Wrong email or password.",
+  too_many_attempts: "Too many attempts — please wait a few minutes and try again.",
+  http_429: "Too many attempts — please wait a few minutes and try again.",
   setup_password_required: "That setup passphrase isn't right.",
   password_too_short: "Password needs to be at least 8 characters.",
   bad_body: "Please fill in every field.",
@@ -1580,6 +1596,74 @@ function describeError(code) {
   if (ERROR_MESSAGES[code]) return ERROR_MESSAGES[code];
   if (code && code.startsWith("http_")) return `Unexpected server response (${code.replace("http_", "")}). Check your Railway deployment logs.`;
   return "Something went wrong — try again.";
+}
+
+/* ================= loading / empty / backups ================= */
+function BootScreen({ state, onRetry, theme }) {
+  return (
+    <div className={`sb-root ${theme === "dark" ? "dark" : ""}`}>
+      <Styles />
+      <div className="sb-gate">
+        <div className="sb-gate-card">
+          <div className="sb-mark" style={{ margin: "0 auto" }}><Sparkles size={20} /></div>
+          <h2>Seva Board</h2>
+          {state === "error" ? (
+            <>
+              <p>Couldn't load the board. Check your connection — your tasks are safe.</p>
+              <button className="sb-btn primary" onClick={onRetry}><RefreshCw size={15} /> Try again</button>
+            </>
+          ) : <p>Loading your board…</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyBoard({ isAdmin, onNew }) {
+  return (
+    <div className="sb-empty-board">
+      <div className="sb-mark" style={{ margin: "0 auto 14px" }}><Sparkles size={20} /></div>
+      <h3>{isAdmin ? "Your board is ready" : "Nothing assigned yet"}</h3>
+      <p>{isAdmin ? "Add your first seva task — pick the seva, assign it to a devotee, set a due date, and they'll be notified." : "When a seva is assigned to you, it will show up here."}</p>
+      {isAdmin && <button className="sb-btn primary" onClick={onNew}><Plus size={16} /> Create the first task</button>}
+    </div>
+  );
+}
+
+function BackupsModal({ toast, onClose, onRestored }) {
+  const [items, setItems] = useState(null);
+  const load = async () => {
+    try { const res = await authCall("/api/admin/backups", "GET"); setItems(res.ok ? ((await res.json()).backups || []) : []); }
+    catch (e) { setItems([]); }
+  };
+  useEffect(() => { load(); }, []);
+  const backupNow = async () => {
+    const res = await authCall("/api/admin/backups", "POST", { create: true });
+    if (res.ok) { toast("Backup saved"); load(); } else toast("Couldn't create a backup");
+  };
+  const restore = async (b) => {
+    if (!window.confirm(`Restore the board to how it was on ${fmtTime(b.createdAt)}?\n\nAnything changed since then will be replaced. A backup of the current board is taken first, so you can undo this.`)) return;
+    const res = await authCall("/api/admin/backups", "POST", { id: b.id });
+    if (res.ok) { toast("Board restored"); onRestored(); load(); } else toast("Couldn't restore that backup");
+  };
+  return (
+    <Modal onClose={onClose} title="Backups & restore" wide>
+      <p className="sb-hint" style={{ marginBottom: 12 }}>The board is backed up automatically — a few times a day while it's in use, and before any risky change — and backups are kept for 30 days. Restoring replaces the live board with the version you choose.</p>
+      <button className="sb-btn primary" onClick={backupNow} style={{ marginBottom: 14 }}><Database size={15} /> Back up now</button>
+      {items === null ? <p className="sb-hint">Loading…</p> : !items.length ? <p className="sb-hint">No backups yet.</p> : (
+        <div className="sb-member-list">
+          {items.map((b) => (
+            <div key={b.id} className="sb-member">
+              <div className="sb-member-id">
+                <div><strong>{fmtTime(b.createdAt)}</strong><em>{b.reason} · {b.counts?.tasks ?? 0} tasks, {b.counts?.members ?? 0} team, {b.counts?.sevas ?? 0} sevas</em></div>
+                <button className="sb-btn ghost sm" style={{ marginLeft: "auto" }} onClick={() => restore(b)}>Restore</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
 }
 
 function LoginGate({ onLogin, needsSetup, theme }) {
@@ -1880,6 +1964,9 @@ kbd{background:var(--line-soft);border:1px solid var(--line);border-radius:4px;p
 .sb-color{width:44px;min-width:44px;padding:3px;height:38px;border:1px solid var(--line);border-radius:9px;background:var(--parchment);cursor:pointer;flex:0!important;}
 .sb-icon-sel{max-width:110px;flex:0!important;border:1px solid var(--line);border-radius:9px;padding:9px;background:var(--parchment);color:var(--ink);}
 .sb-seva-picker{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;}
+.sb-empty-board{text-align:center;background:var(--surface);border:1px dashed var(--line);border-radius:16px;padding:48px 24px;max-width:520px;margin:30px auto;}
+.sb-empty-board h3{font-family:var(--display);font-size:20px;margin:0 0 6px;color:var(--ink);}
+.sb-empty-board p{color:var(--muted);font-size:14px;margin:0 0 18px;line-height:1.5;}
 .sb-add-card{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:18px;background:var(--parchment);}
 .sb-add-title,.sb-list-title{display:flex;align-items:center;gap:6px;margin:0 0 10px;font-family:var(--display);font-size:15px;font-weight:600;color:var(--ink);}
 .sb-check-row{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--ink);margin:4px 0 10px;cursor:pointer;}

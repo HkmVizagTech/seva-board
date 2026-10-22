@@ -56,7 +56,7 @@ a one-time setup passphrase, so a stranger who finds the URL before you can't gr
 first account. Once you've created it, that screen never appears again — everyone after
 you signs in normally, and `BOARD_PASSWORD` no longer does anything at that point.
 
-**Adding people after that:** once logged in, go to **Manage → Logins** to add an email +
+**Adding people after that:** once logged in, go to **••• menu → Logins** to add an email +
 password for anyone else who needs access — optionally linking their login to a devotee
 so their "I am…" identity is set automatically when they sign in. You can also reset
 passwords or remove access there.
@@ -126,7 +126,7 @@ the task modal, newest first. Nothing here is editable; it's an audit log, not a
 
 ## Email notifications
 
-Add an email address to a devotee under **Manage → Team**. When they're assigned to a
+Add an email address to a devotee under **••• menu → Team**. When they're assigned to a
 task (on creation or by adding them later), the app automatically emails them — with the
 seva, due date, priority, and notes. Every send is logged in that task's activity trail,
 and you can resend manually any time from the **Email seva assignment** button inside a
@@ -159,7 +159,7 @@ Option 2 are set up.
    GOOGLE_CLIENT_SECRET=<client secret>
    APP_BASE_URL=<your deployed URL, no trailing slash>
    ```
-7. Redeploy, then **Manage → Email account → Connect Gmail**.
+7. Redeploy, then **••• menu → Email account → Connect Gmail**.
 
 If you ever see "no_refresh_token" when connecting, it means Google already had a grant
 for this app without offline access — go to
@@ -194,7 +194,7 @@ Only used if no personal Gmail account is connected via Option 1.
 
 
 Only relevant if you're on a Microsoft 365 tenant instead of / alongside Google
-Workspace. **Manage → Email account → Connect Outlook** lets a person sign into their
+Workspace. **••• menu → Email account → Connect Outlook** lets a person sign into their
 own Microsoft account and approve the app sending mail as them — no admin consent step
 needed if the tenant allows self-consent for this scope.
 
@@ -219,7 +219,7 @@ needed if the tenant allows self-consent for this scope.
    Railway, redeploy, then click **Connect Outlook** inside the app.
 
 The connected account (email, display name, and refresh token) is stored in MongoDB —
-tokens are refreshed automatically and never shown in the UI. **Manage → Email account**
+tokens are refreshed automatically and never shown in the UI. **••• menu → Email account**
 shows who's connected and has a **Disconnect** button.
 
 ### Option 4 — Microsoft app-only, fixed sender (advanced, no sign-in)
@@ -303,7 +303,7 @@ profile → Turn on notifications**. They'll get a confirmation notification imm
 
 **Important:** a person only receives task notifications if their login is linked to a
 devotee — set that under **My profile → I am (devotee identity)**, or link it for them
-when creating their login in **Manage → Logins**. Without that link, the app has no way
+when creating their login in **••• menu → Logins**. Without that link, the app has no way
 to know which tasks are theirs.
 
 Notifications fire when a devotee is newly assigned to a task. This runs alongside the
@@ -313,3 +313,25 @@ works even if push isn't set up (and vice versa).
 Subscriptions are per-device: someone who wants notifications on both their phone and
 their laptop turns it on separately in each. Dead subscriptions (app uninstalled,
 permission revoked, browser data cleared) are detected and cleaned up automatically.
+
+---
+
+## Going live checklist
+
+1. **Railway variables:** `MONGODB_URI` (and `MONGODB_DB=sevaboard`) and `APP_BASE_URL` (your public URL, no trailing slash). Remove `BOARD_PASSWORD` once your own account exists — it only matters for creating the very first account.
+2. **Create your account first.** Open the site and create the first account — it becomes the Super Admin.
+3. **Choose how email is sent** (••• menu → Email account, or the options above) and test it by assigning a task to yourself.
+4. **Turn on phone notifications:** set the VAPID keys (see the app/notifications section), then My profile → Turn on notifications.
+5. **Add the team:** ••• menu → Team → *Add team member*. Tick **Also give them a login** so they can sign in, and share the password with them directly.
+6. **Install on phones:** Android — browser menu → Install app. iPhone — Share → Add to Home Screen.
+7. **Take a first backup:** ••• menu → Backups & restore → Back up now.
+8. **Revoke any access tokens or keys that were ever pasted into a chat, email or message**, and generate fresh ones.
+
+## Running it day to day
+
+- **Backups & restore (Super Admin only).** The board is backed up automatically — a few times a day while it's in use, and just before risky changes (team/seva/festival edits, deleting a task, importing a backup, restoring). Backups are kept for 30 days. ••• menu → Backups & restore lists them; Restore replaces the live board, after first backing up the current one so a restore can itself be undone. Also keep MongoDB Atlas's own backups switched on — that's a separate safety net.
+- **Uptime monitoring.** Point a monitor (UptimeRobot, Better Stack, …) at `https://YOUR-URL/api/health?deep=1`. It returns 503 if the database is unreachable. Railway's own healthcheck uses the plain `/api/health`, which deliberately never touches the database so a brief database blip can't make Railway restart the app.
+- **Sign-in protection.** After 8 wrong passwords for one email (or 30 from one address) within 15 minutes, sign-in pauses for up to 15 minutes. The counters live in memory and reset when the app redeploys.
+- **Logs.** Railway → your service → Deployments → View logs.
+- **Already in place:** hashed passwords (bcrypt), httpOnly session cookies, role checks on the server for every action, security headers (no framing, no MIME sniffing, HSTS), WebSocket accepted only from your own site, graceful shutdown on redeploy, and the container runs as a non-root user.
+- **Known limitations.** No Content-Security-Policy is set (it would need careful tuning around inline styles and fonts). The app assumes a single server instance — real-time sync and the sign-in counters are held in memory. `npm audit` may flag Next.js 14.x advisories that are only fully cleared by a major upgrade to Next 16; plan that as its own tested upgrade.

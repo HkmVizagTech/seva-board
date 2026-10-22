@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createTaskInBoard, saveBoard } from "../../../../lib/mongodb";
+import { createTaskInBoard, saveBoard, snapshotBoard } from "../../../../lib/mongodb";
 import { currentSession, isAdminRole } from "../../../../lib/authGuard";
 import { broadcast } from "../../../../lib/realtime";
 
@@ -40,6 +40,7 @@ export async function PUT(req) {
   if (!Array.isArray(tasks)) return NextResponse.json({ error: "bad_body" }, { status: 400 });
 
   try {
+    await snapshotBoard("before backup import", 0).catch(() => {});
     await saveBoard({ tasks });
     broadcast({ type: "board_updated" });
     return NextResponse.json({ ok: true });

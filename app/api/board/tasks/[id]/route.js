@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { updateTaskInBoard, deleteTaskFromBoard } from "../../../../../lib/mongodb";
+import { updateTaskInBoard, deleteTaskFromBoard, snapshotBoard } from "../../../../../lib/mongodb";
 import { currentSession, isAdminRole } from "../../../../../lib/authGuard";
 import { broadcast } from "../../../../../lib/realtime";
 
@@ -43,6 +43,7 @@ export async function DELETE(req, { params }) {
   if (!isAdminRole(session.role)) return NextResponse.json({ error: "forbidden", message: "Only admins can delete tasks." }, { status: 403 });
 
   try {
+    await snapshotBoard("before task delete", 60 * 1000).catch(() => {});
     await deleteTaskFromBoard(params.id);
     broadcast({ type: "board_updated" });
     return NextResponse.json({ ok: true });

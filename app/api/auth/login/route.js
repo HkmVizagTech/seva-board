@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { countUsers, getUserByEmail, createUser, createSession, resolveEffectiveRole } from "../../../../lib/mongodb";
 import { hashPassword, verifyPassword } from "../../../../lib/passwords";
 import { SESSION_COOKIE } from "../../../../lib/authGuard";
+import { clientIp, checkLimit, recordFailure, clearKey } from "../../../../lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +26,14 @@ export async function POST(req) {
   if (!email || !password) return NextResponse.json({ error: "bad_body" }, { status: 400 });
   if (password.length < 8) return NextResponse.json({ error: "password_too_short" }, { status: 400 });
 
+  // Blunt password guessing: 8 failed attempts per email, or 30 per address, per 15 minutes.
+  const kEmail = `e:${email}`;
+  const kIp = `i:${clientIp(req)}`;
+  for (const [k, max] of [[kEmail, 8], [kIp, 30]]) {
+    const c = checkLimit(k, max);
+    if (c.blocked) return NextResponse.json({ error: "too_many_attempts", retryAfter: c.retryAfter }, { status: 429, headers: { "Retry-After": String(c.retryAfter) } });
+  }
+
   try {
     const total = await countUsers();
 
@@ -46,11 +55,12 @@ export async function POST(req) {
     }
 
     const user = await getUserByEmail(email);
-    if (!user) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
+    if (!user) return (recordFailure(kEmail), recordFailure(kIp), NextResponse.json({ error: "invalid_credentials" }, { status: 401 }));
     const ok = await verifyPassword(password, user.passwordHash);
-    if (!ok) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
+    if (!ok) return (recordFailure(kEmail), recordFailure(kIp), NextResponse.json({ error: "invalid_credentials" }, { status: 401 }));
 
     // One-time migration safety net (see lib/mongodb.js resolveEffectiveRole).
+    clearKey(kEmail);
     const role = await resolveEffectiveRole(user);
 
     const token = await createSession({ email: user.email, name: user.name, memberId: user.memberId, role });

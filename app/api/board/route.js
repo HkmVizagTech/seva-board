@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getBoard, saveBoard } from "../../../lib/mongodb";
+import { getBoard, saveBoard, snapshotBoard } from "../../../lib/mongodb";
 import { currentSession, isAdminRole } from "../../../lib/authGuard";
 import { broadcast } from "../../../lib/realtime";
 
@@ -10,6 +10,12 @@ export async function GET(req) {
   if (!(await currentSession(req))) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   try {
     const board = await getBoard();
+    // Cheap, throttled safety net: at most one check every 10 minutes, and a new backup at
+    // most every 6 hours — so there's always a recent restore point while the app is in use.
+    if (Date.now() - (global._sevaLastSnapCheck || 0) > 10 * 60 * 1000) {
+      global._sevaLastSnapCheck = Date.now();
+      snapshotBoard("scheduled", 6 * 60 * 60 * 1000).catch(() => {});
+    }
     return NextResponse.json(board);
   } catch (e) {
     console.error(e);
@@ -35,6 +41,7 @@ export async function PUT(req) {
     if ("members" in body) patch.members = body.members;
     if ("festivals" in body) patch.festivals = body.festivals;
 
+    await snapshotBoard("before team/seva/festival change", 5 * 60 * 1000).catch(() => {});
     await saveBoard(patch);
     broadcast({ type: "board_updated" });
     return NextResponse.json({ ok: true });
